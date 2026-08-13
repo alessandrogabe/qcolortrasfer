@@ -7,6 +7,7 @@
 
 import './tx-optical-view.js';
 import './tx-flow-ui.js';
+import './rx-performance-policy.js';
 
 const homeView = document.getElementById('homeView');
 const workspaceView = document.getElementById('workspaceView');
