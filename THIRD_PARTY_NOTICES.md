@@ -1,24 +1,36 @@
 # Third-party notices
 
-qcolortrasfer è distribuito sotto licenza MIT.
+qcolortrasfer è distribuito sotto licenza MIT. Le seguenti opere hanno influenzato o sono usate dalla pipeline ottica.
 
 ## Decimen Optical Transfer v0.3.0
 Repository: https://github.com/bashalarmistalt/decimen-optical-transfer
 
 MIT License — Copyright (c) 2026 Evan Crawley (Bash Alarmist).
 
-qcolortrasfer usa come baseline l'architettura di acquisizione ottica resa pubblica in Decimen v0.3.0: QR standard, stream fountain, camera full-frame e ZXing-WASM in worker. Dalla v1.2 adatta inoltre il fountain LT robust-soliton di Decimen v0.3.0 (distribuzione robust-soliton, log deterministico, PRNG/subset selection e peeling decoder) al formato QCT1 e al suo streamId.
+qcolortrasfer adotta deliberatamente dalla release MIT v0.3.0 i principi di QR standard, fountain stream, acquisizione camera full-frame e decodifica ZXing-WASM in worker. Il robust-soliton LT di qcolortrasfer è adattato da quella release. Le release Decimen >= v0.4.0 sono AGPL e non sono sorgente per questo progetto MIT.
 
-Il layout multi-QR di qcolortrasfer è implementato indipendentemente. Le release Decimen >= v0.4.0 sono AGPL e il loro sorgente non viene incorporato nei file MIT di qcolortrasfer.
+La modulazione dual-QR a 4 colori, la ricostruzione del secondo QR da crominanza e la griglia qcolortrasfer sono estensioni di questo progetto.
 
 ## qrcode 1.5.4
-Repository: https://github.com/soldair/node-qrcode — MIT. Usato per generare QR standard in byte mode.
+Repository: https://github.com/soldair/node-qrcode
+License: MIT.
+
+Usato per generare entrambi i QR standard in byte mode. qcolortrasfer usa anche la matrice `reservedBit`/`isReserved` della versione fissata 1.5.4 per lasciare B/W puro il pattern funzionale del QR.
 
 ## zxing-wasm 2.0.0
-Repository: https://github.com/Sec-ant/zxing-wasm — wrapper MIT. Usato per eseguire ZXing in WebAssembly.
+Repository: https://github.com/Sec-ant/zxing-wasm
+License wrapper: MIT.
+
+Usato per eseguire il decoder ZXing in WebAssembly nel browser sia sul QR base acquisito dalla camera sia sul QR cromatico ricostruito.
 
 ### ZXing-C++
-Repository: https://github.com/zxing-cpp/zxing-cpp — Apache-2.0. Dipendenza transitiva di zxing-wasm.
+Repository: https://github.com/zxing-cpp/zxing-cpp
+License: Apache License 2.0.
+
+`zxing-wasm` incorpora ZXing-C++; pertanto la distribuzione/runtime include anche una dipendenza Apache-2.0. Apache-2.0 è permissiva e compatibile con un progetto MIT, ma non è una licenza MIT.
 
 ## libcimbar
-Repository: https://github.com/sz3/libcimbar — MPL-2.0. Riferimento concettuale per futuri esperimenti cromatici; nessun sorgente MPL è incorporato nei file MIT.
+Repository: https://github.com/sz3/libcimbar
+License: MPL-2.0.
+
+Riferimento concettuale per codici ottici a colori. Nessun sorgente MPL viene incorporato nel progetto MIT.
