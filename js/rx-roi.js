@@ -140,9 +140,10 @@ export class RoiTracker {
   shouldFullScan(now) {
     this.prune(now);
     const confirmed = this.confirmedCount();
+    const warmAcquire = globalThis.__QCOLOR_RX_WARM_ACQUIRE === true;
     let interval;
     if (confirmed === 0) interval = ROI_ACQUIRE_SCAN_MS;
-    else if (this.firstConfirmedAt != null && now - this.firstConfirmedAt < ROI_WARMUP_MS) interval = ROI_WARM_SCAN_MS;
+    else if (warmAcquire && this.firstConfirmedAt != null && now - this.firstConfirmedAt < ROI_WARMUP_MS) interval = ROI_WARM_SCAN_MS;
     else interval = confirmed < this.peakRegions ? ROI_DEGRADED_SCAN_MS : ROI_LOCKED_SCAN_MS;
     return now - this.lastFullScanAt >= interval;
   }
