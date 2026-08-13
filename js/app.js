@@ -4,6 +4,9 @@ import {
   CAPACITY_BYTES, QR_ECC, MAX_GRID_CODES, MIN_AUTO_QR_SIDE,
   chooseGridCount, createDualQrRaster, createTripleQrRaster, gridDims
 } from './optical.js';
+import {
+  adaptiveDwellMs, adaptiveGridCap, adaptiveNextPaintAt, adaptiveOpticalFpsCeiling
+} from './adaptive-scheduler.js';
 
 const $ = id => document.getElementById(id);
 const RX_WORKERS = 2;
@@ -13,7 +16,8 @@ const RX_CAPTURE_FPS = 30;
 const state = {
   selectedFile: null,
   encoder: null, meta: null, symbolId: 0, transmitting: false, txGeneration: 0, txStartedAt: 0, txSymbolsShown: 0,
-  txSlots: 1, txCols: 1, txRows: 1, txCells: [], txStaging: null, txRasterSize: 0, txCellCursor: 0, txScale: 1, txStretch: 1, txLastItem: null,
+  txSlots: 1, txCols: 1, txRows: 1, txCells: [], txCellPaintedAt: [], txStaging: null, txRasterSize: 0,
+  txCellCursor: 0, txScale: 1, txStretch: 1, txLastItem: null, txGenerationMsEma: 0,
   receiving: false, stream: null, track: null, captureGeneration: 0, captureCanvas: null,
   workers: [], workerBusy: [], workerCursor: 0, frameId: 0,
   rxCaptured: 0, rxDroppedBusy: 0, rxBaseDecoded: 0, rxEightBase: 0,
@@ -28,14 +32,25 @@ const state = {
 function log(message) { const el = $('log'); if (!el) return; const line = `${new Date().toLocaleTimeString()}  ${message}`; el.textContent = `${line}\n${el.textContent}`.slice(0, 30000); }
 function status(id, text, kind = '') { const el = $(id); if (!el) return; el.textContent = text; el.dataset.kind = kind; }
 function formatBytes(bytes) { if (bytes < 1024) return `${bytes} B`; const units = ['KiB', 'MiB', 'GiB']; let value = bytes, unit = -1; do { value /= 1024; unit++; } while (value >= 1024 && unit < units.length - 1); return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unit]}`; }
+function sleep(ms) { return ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve(); }
 function compatiblePacket(a, b) { return a.streamId === b.streamId && a.sourceCount === b.sourceCount && a.chunkSize === b.chunkSize && a.fileLength === b.fileLength && a.sha256 === b.sha256 && a.visualStates === b.visualStates; }
 function estimatedFountainTarget(k) { if (k <= 4) return Math.max(k, Math.ceil(k * 2.5)); if (k < 32) return Math.ceil(k * 1.6); if (k < 128) return Math.ceil(k * 1.35); return Math.ceil(k * 1.20); }
-function selectedVisualStates() { return Number($('colorMode').value) === 8 ? 8 : 4; }
+
+// The UI exposes three optical profiles. 4-adaptive uses exactly the same
+// four-state / two-channel payload as 4-stable; only its TX scheduling differs.
+function selectedColorMode() { return $('colorMode').value; }
+function isAdaptiveMode() { return selectedColorMode() === '4a'; }
+function selectedVisualStates() { return selectedColorMode() === '8' ? 8 : 4; }
 function channelsPerQr() { return selectedVisualStates() === 8 ? 3 : 2; }
 function selectedChunkBytes() { return Math.max(512, Math.min(1280, Number($('payloadBytes').value) || 1024)); }
 function selectedFps() { return Math.max(1, Number($('fps').value) || 3); }
+
+// AUTO remains conservative for the experimental 8-state profile. The new
+// adaptive four-state profile can keep more simultaneous QR because each tile
+// is explicitly guaranteed a stable dwell before repaint.
 function autoGridCap() {
   const fps = selectedFps(), channels = channelsPerQr();
+  if (isAdaptiveMode()) return adaptiveGridCap(fps);
   if (fps >= 20) return channels === 3 ? 1 : 2;
   if (fps >= 12) return channels === 3 ? 2 : 4;
   return 6;
@@ -58,7 +73,8 @@ function selectedGridCount() {
 function updateGridLabel() {
   const { width, height } = txStageBudget(); const side = Math.floor(Math.min(width / state.txCols, height / state.txRows));
   const cap = $('gridMode').value === 'auto' && autoGridCap() < 6 ? ` · cap AUTO ${autoGridCap()}` : '';
-  $('gridState').textContent = `${state.txSlots} QR · ${state.txCols}×${state.txRows} · ~${side}px${cap}`;
+  const dwell = isAdaptiveMode() ? ` · dwell ≥${Math.round(adaptiveDwellMs(selectedFps()))}ms` : '';
+  $('gridState').textContent = `${state.txSlots} QR · ${state.txCols}×${state.txRows} · ~${side}px${cap}${dwell}`;
 }
 
 function ensureTxStaging() {
@@ -88,16 +104,27 @@ function paintTxCell(index, item) {
   const canvas = $('txCanvas');
   if (!canvas.width || !canvas.height) resizeTxCanvas();
   else { const ctx = canvas.getContext('2d', { alpha: false }); ctx.imageSmoothingEnabled = false; const source = state.txRasterSize, dest = source * state.txScale; ctx.drawImage(state.txStaging, logicalX, logicalY, source, source, logicalX * state.txScale, logicalY * state.txScale, dest, dest); }
+  // Monotonic timestamp used only by the adaptive scheduler. Initial grid paints
+  // count too, so the first animated replacement cannot immediately overwrite a
+  // tile the receiver has barely had time to see.
+  state.txCellPaintedAt[index] = performance.now();
   state.txLastItem = item; updateTxMeta();
 }
 
-function updateModeBadge() { $('colorBadge').textContent = selectedVisualStates() === 8 ? '8 STATI · 3 CANALI EXP' : '4 COLORI · 2 CANALI'; }
+function updateModeBadge() {
+  if (selectedColorMode() === '8') $('colorBadge').textContent = '8 STATI · 3 CANALI EXP';
+  else if (isAdaptiveMode()) $('colorBadge').textContent = '4 STATI · ADAPTIVE';
+  else $('colorBadge').textContent = '4 COLORI · 2 CANALI';
+}
 function updateTxMeta() {
   if (!state.encoder || !state.txLastItem) { updateModeBadge(); return; }
-  const fps = selectedFps(), channels = state.meta.visualStates === 8 ? 3 : 2, aggregate = fps * state.txSlots * channels;
-  const theoreticalKiB = aggregate * state.encoder.chunkSize / 1024;
+  const requestedFps = selectedFps(), channels = state.meta.visualStates === 8 ? 3 : 2;
+  const opticalFps = isAdaptiveMode() ? adaptiveOpticalFpsCeiling(requestedFps) : requestedFps;
+  const aggregate = opticalFps * state.txSlots * channels; const theoreticalKiB = aggregate * state.encoder.chunkSize / 1024;
   const elapsed = state.txStartedAt ? Math.max(0.001, (performance.now() - state.txStartedAt) / 1000) : 0; const actual = elapsed ? (state.txSymbolsShown / elapsed).toFixed(1) : '—';
-  $('txFrame').textContent = `QR V${state.txLastItem.raster.version} ECC ${QR_ECC} · ${state.meta.visualStates} stati / ${channels} canali · payload ${state.encoder.chunkSize} B · ${state.txSlots} QR · ${fps} fps/QR · ${aggregate} simboli/s · ~${theoreticalKiB.toFixed(1)} KiB/s fountain teorici · ${actual} simboli/s generati`;
+  const fpsText = isAdaptiveMode() && opticalFps + 0.01 < requestedFps ? `${requestedFps} target / ≤${opticalFps.toFixed(1)} ottici` : `${requestedFps} fps/QR`;
+  const genText = state.txGenerationMsEma > 0 ? ` · gen ${state.txGenerationMsEma.toFixed(0)}ms` : '';
+  $('txFrame').textContent = `QR V${state.txLastItem.raster.version} ECC ${QR_ECC} · ${state.meta.visualStates} stati / ${channels} canali · payload ${state.encoder.chunkSize} B · ${state.txSlots} QR · ${fpsText} · ~${theoreticalKiB.toFixed(1)} KiB/s fountain ottici · ${actual} simboli/s generati${genText}`;
   updateModeBadge();
 }
 
@@ -116,14 +143,15 @@ async function rebuildTxGrid(reason = 'layout') {
   if (!state.encoder) return;
   const resume = state.transmitting; state.transmitting = false; const generation = ++state.txGeneration;
   const { width, height } = txStageBudget(); state.txSlots = selectedGridCount(); const dims = gridDims(state.txSlots, width, height); state.txCols = dims.cols; state.txRows = dims.rows;
-  state.txCells = new Array(state.txSlots).fill(null); state.txStaging = null; state.txRasterSize = 0; state.txCellCursor = 0;
+  state.txCells = new Array(state.txSlots).fill(null); state.txCellPaintedAt = new Array(state.txSlots).fill(0); state.txStaging = null; state.txRasterSize = 0; state.txCellCursor = 0; state.txGenerationMsEma = 0;
   const channels = state.meta.visualStates === 8 ? 3 : 2;
   for (let index = 0; index < state.txSlots; index++) {
     const item = await makeTxItem(generation); if (!item || generation !== state.txGeneration) return;
     if (!state.txRasterSize) { state.txRasterSize = item.raster.size; ensureTxStaging(); resizeTxCanvas(); }
     paintTxCell(index, item); state.txSymbolsShown += channels;
   }
-  resizeTxCanvas(); const mode = $('gridMode').value === 'auto' ? 'AUTO' : 'manuale'; log(`TX ${reason}: ${state.txSlots} QR (${state.txCols}x${state.txRows}) · ${mode} · ${state.meta.visualStates} stati · ${channels} simboli/QR · ${state.encoder.chunkSize} B`);
+  resizeTxCanvas(); const mode = $('gridMode').value === 'auto' ? 'AUTO' : 'manuale'; const scheduler = isAdaptiveMode() ? 'ADAPTIVE dwell' : 'standard';
+  log(`TX ${reason}: ${state.txSlots} QR (${state.txCols}x${state.txRows}) · ${mode} · ${state.meta.visualStates} stati · ${channels} simboli/QR · ${state.encoder.chunkSize} B · ${scheduler}`);
   if (resume && generation === state.txGeneration) { state.transmitting = true; state.txStartedAt = performance.now(); state.txSymbolsShown = 0; void txLoop(generation); }
 }
 
@@ -134,10 +162,12 @@ async function configureSelectedFile(reason = 'configurazione') {
   const encoder = new FountainEncoder(bytes, chunkSize, streamId);
   const meta = { streamId, sourceCount: encoder.sourceCount, chunkSize: encoder.chunkSize, fileLength: bytes.length, fileName: name, sha256: hash, visualStates };
   const probe = encodeOpticalPacket(meta, 0, encoder.symbol(0).data); if (probe.length > CAPACITY_BYTES) throw new Error(`QCT1 ${probe.length} B supera il limite QR ${CAPACITY_BYTES} B`);
-  state.encoder = encoder; state.meta = meta; state.symbolId = 0; state.txSymbolsShown = 0; state.txStartedAt = 0;
-  $('txFileInfo').textContent = `${name} · ${formatBytes(bytes.length)} · K=${encoder.sourceCount} × ${encoder.chunkSize} B · ${visualStates} stati / ${visualStates === 8 ? 3 : 2} canali · SHA-256 ${hash ? 'OK' : 'N/D'}`;
-  status('txStatus', `Pronto · payload ${chunkSize} B · ${visualStates} stati. AUTO limita la griglia solo ai profili 12/20 fps più pesanti; la griglia manuale resta libera.`, 'ok');
-  log(`TX ${reason}: ${name}, ${bytes.length} byte, stream ${streamId}, K=${encoder.sourceCount}, payload=${chunkSize}, states=${visualStates}`);
+  state.encoder = encoder; state.meta = meta; state.symbolId = 0; state.txSymbolsShown = 0; state.txStartedAt = 0; state.txGenerationMsEma = 0;
+  const modeLabel = isAdaptiveMode() ? '4 stati ADAPTIVE' : visualStates === 8 ? '8 stati EXP' : '4 stati STABILE';
+  $('txFileInfo').textContent = `${name} · ${formatBytes(bytes.length)} · K=${encoder.sourceCount} × ${encoder.chunkSize} B · ${modeLabel} · ${visualStates === 8 ? 3 : 2} canali · SHA-256 ${hash ? 'OK' : 'N/D'}`;
+  const adaptiveText = isAdaptiveMode() ? ` ADAPTIVE garantisce dwell ≥${Math.round(adaptiveDwellMs(selectedFps()))} ms/cella senza feedback dal ricevitore.` : ' AUTO limita la griglia solo ai profili più pesanti; la griglia manuale resta libera.';
+  status('txStatus', `Pronto · payload ${chunkSize} B · ${modeLabel}.${adaptiveText}`, 'ok');
+  log(`TX ${reason}: ${name}, ${bytes.length} byte, stream ${streamId}, K=${encoder.sourceCount}, payload=${chunkSize}, states=${visualStates}, adaptive=${isAdaptiveMode()}`);
   await rebuildTxGrid(reason);
 }
 async function prepareFile(file) {
@@ -145,21 +175,41 @@ async function prepareFile(file) {
   await configureSelectedFile('file selezionato');
 }
 
+// Standard mode preserves the original round-robin timing. Adaptive mode uses
+// the same round-robin order but generates the next QR BEFORE waiting for that
+// tile's dwell deadline. The receiver therefore sees a stable old QR while CPU
+// work happens, and the paint itself becomes the only optical transition.
 async function txLoop(generation) {
   while (state.transmitting && generation === state.txGeneration) {
-    const fpsPerCode = selectedFps(); const interval = 1000 / (fpsPerCode * state.txSlots); const started = performance.now();
+    const fpsPerCode = selectedFps(); const cellIndex = state.txCellCursor; const started = performance.now();
     try {
-      const item = await makeTxItem(generation); if (!item) break; paintTxCell(state.txCellCursor, item); state.txCellCursor = (state.txCellCursor + 1) % state.txSlots; state.txSymbolsShown += state.meta.visualStates === 8 ? 3 : 2;
+      const item = await makeTxItem(generation); if (!item) break;
+      const generationMs = performance.now() - started;
+      state.txGenerationMsEma = state.txGenerationMsEma ? state.txGenerationMsEma * 0.85 + generationMs * 0.15 : generationMs;
+
+      if (isAdaptiveMode()) {
+        const nextPaintAt = adaptiveNextPaintAt(state.txCellPaintedAt[cellIndex], fpsPerCode);
+        await sleep(Math.max(0, nextPaintAt - performance.now()));
+        if (!state.transmitting || generation !== state.txGeneration) break;
+      }
+
+      paintTxCell(cellIndex, item); state.txCellCursor = (cellIndex + 1) % state.txSlots; state.txSymbolsShown += state.meta.visualStates === 8 ? 3 : 2;
     } catch (error) { state.transmitting = false; status('txStatus', `Errore QR colore: ${error.message}`, 'error'); log(`TX QR error: ${error.stack || error.message}`); break; }
-    const spent = performance.now() - started; if (!state.transmitting || generation !== state.txGeneration) break; await new Promise(resolve => setTimeout(resolve, Math.max(0, interval - spent)));
+
+    if (!state.transmitting || generation !== state.txGeneration) break;
+    if (!isAdaptiveMode()) {
+      const interval = 1000 / (fpsPerCode * state.txSlots); const spent = performance.now() - started;
+      await sleep(Math.max(0, interval - spent));
+    }
   }
 }
 function startTransmit() {
   if (!state.encoder || state.transmitting) return;
   state.transmitting = true; state.txStartedAt = performance.now(); state.txSymbolsShown = 0; const generation = ++state.txGeneration; requestWakeLock();
-  const channels = state.meta.visualStates === 8 ? 3 : 2, aggregate = selectedFps() * state.txSlots * channels;
-  status('txStatus', `Trasmissione attiva: ${state.meta.visualStates} stati · ${state.txSlots} QR · ${selectedFps()} fps/QR · payload ${state.encoder.chunkSize} B · fino a ${aggregate} simboli fountain/s.`, 'ok');
-  log(`TX start · ${state.txSlots} QR @ ${selectedFps()} fps/QR · ${channels} canali · ${state.encoder.chunkSize} B`); void txLoop(generation);
+  const channels = state.meta.visualStates === 8 ? 3 : 2; const requested = selectedFps(); const optical = isAdaptiveMode() ? adaptiveOpticalFpsCeiling(requested) : requested; const aggregate = optical * state.txSlots * channels;
+  const schedulerText = isAdaptiveMode() ? `ADAPTIVE · ${requested} fps target · dwell ≥${Math.round(adaptiveDwellMs(requested))} ms` : `${requested} fps/QR`;
+  status('txStatus', `Trasmissione attiva: ${state.meta.visualStates} stati · ${schedulerText} · ${state.txSlots} QR · payload ${state.encoder.chunkSize} B · fino a ~${aggregate.toFixed(1)} simboli fountain/s ottici.`, 'ok');
+  log(`TX start · ${state.txSlots} QR · ${schedulerText} · ${channels} canali · ${state.encoder.chunkSize} B`); void txLoop(generation);
 }
 function stopTransmit() { state.transmitting = false; state.txGeneration++; if (state.encoder) status('txStatus', 'Trasmissione in pausa. I QR visibili restano decodificabili.'); releaseWakeLockIfIdle(); }
 async function toggleFullscreenTx() { const stage = $('txStage'); try { if (document.fullscreenElement) await document.exitFullscreen(); else if (stage.requestFullscreen) await stage.requestFullscreen(); else status('txStatus', 'Schermo intero non supportato; ruota il dispositivo per sfruttare la larghezza.', 'warn'); } catch (error) { status('txStatus', `Schermo intero non disponibile: ${error.message}`, 'warn'); } }
@@ -268,7 +318,8 @@ async function runSelfTest() {
     const dual = await createDualQrRaster(p0, p1); if (dual.visualStates !== 4 || dual.channels !== 2) throw new Error('dual color non attivo');
     const meta8 = { ...meta4, visualStates: 8 }; const q0 = encodeOpticalPacket(meta8, 2, enc.symbol(2).data), q1 = encodeOpticalPacket(meta8, 3, enc.symbol(3).data), q2 = encodeOpticalPacket(meta8, 4, enc.symbol(4).data);
     if (decodeOpticalPacket(q0).visualStates !== 8) throw new Error('flag 8-state non presente'); const triple = await createTripleQrRaster(q0, q1, q2); if (triple.visualStates !== 8 || triple.channels !== 3 || triple.coloredModules <= 0) throw new Error('triple color non attivo');
-    status('selfTest', `Autotest: OK · payload 1024 B · 4 stati/2 canali + 8 stati/3 canali · QR V${triple.version} ECC ${triple.ecc} · ${triple.coloredModules} moduli cromatici · fino a 20 fps.`, 'ok'); log(`Autotest 4/8-state OK · QR V${triple.version}, ${triple.modules} moduli`);
+    const dwell20 = adaptiveDwellMs(20); if (dwell20 < 70 || adaptiveGridCap(20) !== 4) throw new Error('scheduler ADAPTIVE non coerente');
+    status('selfTest', `Autotest: OK · payload 1024 B · 4 stati STABILE/ADAPTIVE + 8 stati EXP · QR V${triple.version} ECC ${triple.ecc} · dwell 20fps=${Math.round(dwell20)}ms · fino a 20 fps target.`, 'ok'); log(`Autotest 4/8-state + adaptive OK · QR V${triple.version}, ${triple.modules} moduli`);
   } catch (error) { status('selfTest', `Autotest: ERRORE · ${error.message}`, 'error'); log(`Autotest FAIL: ${error.stack || error.message}`); }
 }
 function updateNetworkState() { $('netState').textContent = navigator.onLine ? 'rete: online' : 'rete: offline'; }
@@ -281,5 +332,5 @@ $('startRx').addEventListener('click', startCamera); $('stopRx').addEventListene
 window.addEventListener('resize', scheduleTxDisplayRefresh); window.addEventListener('orientationchange', scheduleTxDisplayRefresh); document.addEventListener('fullscreenchange', scheduleTxDisplayRefresh); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && (state.transmitting || state.receiving)) requestWakeLock(); });
 window.addEventListener('beforeunload', () => { stopTransmit(); stopCamera(); terminateWorkers(); if (state.downloadUrl) URL.revokeObjectURL(state.downloadUrl); });
 
-$('capacity').textContent = `payload fino a 1280 B · 4/8 stati · 2/3 canali · max 20 fps`;
+$('capacity').textContent = `payload fino a 1280 B · 4 STABILE/ADAPTIVE · 8 EXP · max 20 fps target`;
 updateModeBadge(); resetReceiver(); setupPwa(); void runSelfTest();
