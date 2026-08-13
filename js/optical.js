@@ -1,8 +1,10 @@
 // Standards-compliant QR optical layer. The base channel follows the proven
-// Decimen v0.3.0 idea (ordinary QR + ZXing). qcolortrasfer adds a second QR
-// channel in chroma while preserving the first QR's luminance.
+// Decimen v0.3.0 approach (ordinary QR + ZXing). qcolortrasfer overlays one or
+// two additional QR channels in chroma while preserving base QR luminance.
 
-import { COLOR_MODE, rgbForState } from './color-code.js';
+import {
+  COLOR_MODE_4, COLOR_MODE_8, rgbForState, rgbForState8
+} from './color-code.js';
 
 export const CAPACITY_BYTES = 1465;
 export const QR_ECC = 'L';
@@ -11,7 +13,10 @@ export const QR_MASK = 4;
 export const MAX_GRID_CODES = 6;
 export const MIN_AUTO_QR_SIDE = 150;
 export const VISUAL_STATES = 4;
-export { COLOR_MODE };
+export const VISUAL_STATES_4 = 4;
+export const VISUAL_STATES_8 = 8;
+export const COLOR_MODE = COLOR_MODE_4;
+export { COLOR_MODE_4, COLOR_MODE_8 };
 
 const QR_MODULE_URL = 'https://esm.sh/qrcode@1.5.4?bundle';
 let qrModulePromise = null;
@@ -58,23 +63,18 @@ function makeQr(QRCode, bytes, version) {
   });
 }
 
-// Two independent ordinary QR symbols share one visual matrix. The primary QR
-// controls luminance and is directly readable by ZXing. On non-reserved modules
-// the secondary QR chooses warm/cool chroma. Reserved/function modules stay
-// pure black/white; with identical version/ECC/mask they are identical in both
-// QR symbols and therefore can be synthesized by the receiver.
-export async function createDualQrRaster(primaryBytes, secondaryBytes) {
+async function createLayeredQrRaster(primaryBytes, chromaBytes) {
   validateBytes(primaryBytes, 'Primary');
-  validateBytes(secondaryBytes, 'Color');
+  if (!Array.isArray(chromaBytes) || chromaBytes.length < 1 || chromaBytes.length > 2) throw new Error('Layered QR requires one or two chroma channels');
+  chromaBytes.forEach((bytes, index) => validateBytes(bytes, `Color ${index + 1}`));
+
   const QRCode = await getQrCode();
   const primary = makeQr(QRCode, primaryBytes);
-  const secondary = makeQr(QRCode, secondaryBytes, primary.version);
-  if (primary.version !== secondary.version || primary.modules.size !== secondary.modules.size) {
-    throw new Error('Dual QR channels did not lock to the same QR version');
+  const chroma = chromaBytes.map(bytes => makeQr(QRCode, bytes, primary.version));
+  for (const qr of chroma) {
+    if (qr.version !== primary.version || qr.modules.size !== primary.modules.size) throw new Error('Layered QR channels did not lock to the same QR version');
   }
-  if (typeof primary.modules.isReserved !== 'function') {
-    throw new Error('qrcode 1.5.4 reserved-module API unavailable');
-  }
+  if (typeof primary.modules.isReserved !== 'function') throw new Error('qrcode 1.5.4 reserved-module API unavailable');
 
   const modules = primary.modules.size;
   const size = modules + QR_MARGIN * 2;
@@ -85,36 +85,36 @@ export async function createDualQrRaster(primaryBytes, secondaryBytes) {
   for (let y = 0; y < modules; y++) {
     for (let x = 0; x < modules; x++) {
       const primaryDark = Boolean(primary.modules.get(y, x));
-      const secondaryDark = Boolean(secondary.modules.get(y, x));
+      const bits = chroma.map(qr => Boolean(qr.modules.get(y, x)));
       const reserved = Boolean(primary.modules.isReserved(y, x));
-      if (reserved && primaryDark !== secondaryDark) {
-        throw new Error(`QR function module mismatch at ${x},${y}`);
+      if (reserved) {
+        for (const bit of bits) if (primaryDark !== bit) throw new Error(`QR function module mismatch at ${x},${y}`);
       }
       let rgb;
       if (reserved) rgb = primaryDark ? [0, 0, 0] : [255, 255, 255];
-      else { rgb = rgbForState(primaryDark, secondaryDark ? 1 : 0); coloredModules++; }
+      else if (chroma.length === 1) { rgb = rgbForState(primaryDark, bits[0] ? 1 : 0); coloredModules++; }
+      else { rgb = rgbForState8(primaryDark, bits[0] ? 1 : 0, bits[1] ? 1 : 0); coloredModules++; }
       const offset = ((y + QR_MARGIN) * size + x + QR_MARGIN) * 4;
-      pixels[offset] = rgb[0];
-      pixels[offset + 1] = rgb[1];
-      pixels[offset + 2] = rgb[2];
-      pixels[offset + 3] = 255;
+      pixels[offset] = rgb[0]; pixels[offset + 1] = rgb[1]; pixels[offset + 2] = rgb[2]; pixels[offset + 3] = 255;
     }
   }
 
+  const visualStates = chroma.length === 2 ? VISUAL_STATES_8 : VISUAL_STATES_4;
   return {
-    pixels,
-    size,
-    version: primary.version,
-    modules,
-    totalModules: size,
-    ecc: QR_ECC,
-    colorMode: COLOR_MODE,
-    visualStates: VISUAL_STATES,
-    coloredModules
+    pixels, size, version: primary.version, modules, totalModules: size, ecc: QR_ECC,
+    colorMode: visualStates === 8 ? COLOR_MODE_8 : COLOR_MODE_4,
+    visualStates, channels: chroma.length + 1, coloredModules
   };
 }
 
-// Kept for diagnostics/backward-compatible tests: an ordinary monochrome QR.
+export function createDualQrRaster(primaryBytes, secondaryBytes) {
+  return createLayeredQrRaster(primaryBytes, [secondaryBytes]);
+}
+
+export function createTripleQrRaster(primaryBytes, secondaryBytes, tertiaryBytes) {
+  return createLayeredQrRaster(primaryBytes, [secondaryBytes, tertiaryBytes]);
+}
+
 export async function createQrRaster(bytes) {
   validateBytes(bytes, 'QR');
   const QRCode = await getQrCode();
