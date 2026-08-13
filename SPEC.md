@@ -30,7 +30,7 @@ Static installable PWA for one-way screen-to-camera file transfer with no mandat
 24. Finalization remains guarded by `rxFinalizing/rxComplete`.
 
 ## QCT2 frame layout
-Little-endian/DataView numeric fields as implemented by JavaScript DataView defaults used consistently within qcolortrasfer:
+All multi-byte numeric fields are encoded **big-endian**, matching JavaScript `DataView.get/setUint*` default behavior used by QCT1 and QCT2.
 
 ```text
 0   u32 magic "QCT2"
@@ -49,6 +49,7 @@ Little-endian/DataView numeric fields as implemented by JavaScript DataView defa
 `sourceCount == ceil(containerLength/chunkSize)` is mandatory. QCT2 sourceCount is u16; UI must reject a payload/file combination that exceeds it.
 
 ## QCF2 container
+All multi-byte QCF2 numeric fields are likewise big-endian.
 
 ```text
 0   u32 magic "QCF2"
