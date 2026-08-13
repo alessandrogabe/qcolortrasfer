@@ -34,9 +34,10 @@ export function devicePixelsPerRasterCell(count, widthCss, heightCss, dpr, raste
   return (sideCss * Math.max(1, Number(dpr) || 1)) / Math.max(1, rasterSize);
 }
 
-// AUTO is intentionally 4-or-6 only. Six is selected only when it does not
-// make each QR optically too small; otherwise four larger QRs win. Manual
-// diagnostic modes may still expose other layouts outside this helper.
+// Production AUTO is intentionally 4-or-6 only. Six is selected only when it
+// does not make each QR optically too small; otherwise four larger QRs win.
+// Lower-count grid primitives live in optical.js solely for legacy/internal
+// compatibility tests and are not exposed by the v2 production UI.
 export function chooseHighThroughputGrid(widthCss, heightCss, dpr, rasterSize, minPx = TX_MIN_DEVICE_PX_PER_CELL) {
   const sixPx = devicePixelsPerRasterCell(6, widthCss, heightCss, dpr, rasterSize);
   return sixPx >= minPx ? 6 : 4;
