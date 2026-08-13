@@ -2,6 +2,17 @@
 
 PWA open source MIT per trasferire file direttamente dallo schermo di un dispositivo alla fotocamera di un altro, senza Wi‑Fi, Bluetooth, account o backend dati.
 
+## v2.1 UI: launcher INVIA / RICEVI
+
+La v2.1 aggiunge una schermata iniziale separata dal motore ottico. All'avvio l'utente sceglie il ruolo del dispositivo con due azioni principali:
+
+- **INVIA** apre il workspace TX high-throughput;
+- **RICEVI** apre il workspace RX ROI/crop.
+
+Il launcher usa un modulo dedicato `js/ui-shell.js`: non implementa protocollo, fountain, QR, camera o decoder. La logica tecnica resta in `app.js` e nei moduli v2. Quando una vista viene nascosta, `ui-shell.js` usa i normali controlli STOP già esistenti per non lasciare trasmissione o camera attive in background.
+
+Le statistiche dettagliate non vengono semplificate: `txFrame`, `rxStats`, progress, stato, autotest, diagnostica e log restano disponibili nei workspace. La nuova UI cambia soltanto presentazione e navigazione.
+
 ## v2 beta: high-throughput QR + colore
 
 La v2 riallinea l'architettura all'obiettivo principale del progetto: partire dal metodo QR/fountain ad alto throughput dimostrato da Decimen e **migliorarlo con un secondo QR logico nella crominanza**.
@@ -98,7 +109,7 @@ npm test
 npm run check
 ```
 
-La suite copre QCT1/QCT2, QCF2, CRC, fountain, palette, AUTO 4/6, lookahead math, worker scaling, ROI, PWA e finalizzazione atomica. La validazione display→camera resta necessariamente fisica.
+La suite copre QCT1/QCT2, QCF2, CRC, fountain, palette, AUTO 4/6, lookahead math, worker scaling, ROI, PWA, launcher UI e finalizzazione atomica. La validazione display→camera resta necessariamente fisica.
 
 ## GitHub Pages
 
