@@ -7,20 +7,24 @@ import {
 import {
   adaptiveDwellMs, adaptiveGridCap, adaptiveNextPaintAt, adaptiveOpticalFpsCeiling
 } from './adaptive-scheduler.js';
+import { RoiTracker, workerCountForHardware } from './rx-roi.js';
 
 const $ = id => document.getElementById(id);
-const RX_WORKERS = 2;
 const RX_CAPTURE_WIDTH = 1920;
-const RX_CAPTURE_FPS = 30;
+const RX_CAPTURE_FPS_TARGET = 60;
+const RX_CAPTURE_FPS_FALLBACK = 30;
 
 const state = {
   selectedFile: null,
   encoder: null, meta: null, symbolId: 0, transmitting: false, txGeneration: 0, txStartedAt: 0, txSymbolsShown: 0,
   txSlots: 1, txCols: 1, txRows: 1, txCells: [], txCellPaintedAt: [], txStaging: null, txRasterSize: 0,
   txCellCursor: 0, txScale: 1, txStretch: 1, txLastItem: null, txGenerationMsEma: 0,
+
   receiving: false, stream: null, track: null, captureGeneration: 0, captureCanvas: null,
-  workers: [], workerBusy: [], workerCursor: 0, frameId: 0,
-  rxCaptured: 0, rxDroppedBusy: 0, rxBaseDecoded: 0, rxEightBase: 0,
+  workers: [], workerBusy: [], workerTasks: [], workerCursor: 0, frameId: 0, rxWorkerCount: 0,
+  roiTracker: new RoiTracker(),
+  rxCaptured: 0, rxDroppedBusy: 0, rxFullScans: 0, rxCropTasks: 0, rxCropHits: 0,
+  rxBaseDecoded: 0, rxEightBase: 0,
   rxColor1Candidates: 0, rxColor1Decoded: 0, rxColor1Separation: 0,
   rxColor2Candidates: 0, rxColor2Decoded: 0, rxColor2Separation: 0,
   rxPacketRejected: 0, rxWorkerErrors: 0,
@@ -29,25 +33,28 @@ const state = {
   wakeLock: null, installPrompt: null,
 };
 
-function log(message) { const el = $('log'); if (!el) return; const line = `${new Date().toLocaleTimeString()}  ${message}`; el.textContent = `${line}\n${el.textContent}`.slice(0, 30000); }
+function log(message) {
+  const el = $('log');
+  if (!el) return;
+  const line = `${new Date().toLocaleTimeString()}  ${message}`;
+  el.textContent = `${line}\n${el.textContent}`.slice(0, 30000);
+}
 function status(id, text, kind = '') { const el = $(id); if (!el) return; el.textContent = text; el.dataset.kind = kind; }
 function formatBytes(bytes) { if (bytes < 1024) return `${bytes} B`; const units = ['KiB', 'MiB', 'GiB']; let value = bytes, unit = -1; do { value /= 1024; unit++; } while (value >= 1024 && unit < units.length - 1); return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unit]}`; }
 function sleep(ms) { return ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve(); }
 function compatiblePacket(a, b) { return a.streamId === b.streamId && a.sourceCount === b.sourceCount && a.chunkSize === b.chunkSize && a.fileLength === b.fileLength && a.sha256 === b.sha256 && a.visualStates === b.visualStates; }
 function estimatedFountainTarget(k) { if (k <= 4) return Math.max(k, Math.ceil(k * 2.5)); if (k < 32) return Math.ceil(k * 1.6); if (k < 128) return Math.ceil(k * 1.35); return Math.ceil(k * 1.20); }
 
-// The UI exposes three optical profiles. 4-adaptive uses exactly the same
-// four-state / two-channel payload as 4-stable; only its TX scheduling differs.
+// ---- TX profile -------------------------------------------------------------
+// 4-adaptive uses exactly the same four-state/two-channel wire format as
+// 4-stable. It differs only in sender timing and remains available for devices
+// that benefit from longer optical dwell.
 function selectedColorMode() { return $('colorMode').value; }
 function isAdaptiveMode() { return selectedColorMode() === '4a'; }
 function selectedVisualStates() { return selectedColorMode() === '8' ? 8 : 4; }
 function channelsPerQr() { return selectedVisualStates() === 8 ? 3 : 2; }
 function selectedChunkBytes() { return Math.max(512, Math.min(1280, Number($('payloadBytes').value) || 1024)); }
-function selectedFps() { return Math.max(1, Number($('fps').value) || 3); }
-
-// AUTO remains conservative for the experimental 8-state profile. The new
-// adaptive four-state profile can keep more simultaneous QR because each tile
-// is explicitly guaranteed a stable dwell before repaint.
+function selectedFps() { return Math.max(1, Number($('fps').value) || 8); }
 function autoGridCap() {
   const fps = selectedFps(), channels = channelsPerQr();
   if (isAdaptiveMode()) return adaptiveGridCap(fps);
@@ -56,8 +63,18 @@ function autoGridCap() {
   return 6;
 }
 
-async function requestWakeLock() { if (!('wakeLock' in navigator) || state.wakeLock) return; try { state.wakeLock = await navigator.wakeLock.request('screen'); state.wakeLock.addEventListener('release', () => { state.wakeLock = null; }); } catch (error) { log(`Wake lock non disponibile: ${error.message}`); } }
-async function releaseWakeLockIfIdle() { if (state.transmitting || state.receiving || !state.wakeLock) return; try { await state.wakeLock.release(); } catch {} state.wakeLock = null; }
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator) || state.wakeLock) return;
+  try {
+    state.wakeLock = await navigator.wakeLock.request('screen');
+    state.wakeLock.addEventListener('release', () => { state.wakeLock = null; });
+  } catch (error) { log(`Wake lock non disponibile: ${error.message}`); }
+}
+async function releaseWakeLockIfIdle() {
+  if (state.transmitting || state.receiving || !state.wakeLock) return;
+  try { await state.wakeLock.release(); } catch {}
+  state.wakeLock = null;
+}
 
 function txStageBudget() {
   const stage = $('txStage'); const style = getComputedStyle(stage); const px = value => Number.parseFloat(value) || 0;
@@ -76,7 +93,6 @@ function updateGridLabel() {
   const dwell = isAdaptiveMode() ? ` · dwell ≥${Math.round(adaptiveDwellMs(selectedFps()))}ms` : '';
   $('gridState').textContent = `${state.txSlots} QR · ${state.txCols}×${state.txRows} · ~${side}px${cap}${dwell}`;
 }
-
 function ensureTxStaging() {
   if (!state.txRasterSize) return;
   const width = state.txRasterSize * state.txCols, height = state.txRasterSize * state.txRows;
@@ -104,17 +120,13 @@ function paintTxCell(index, item) {
   const canvas = $('txCanvas');
   if (!canvas.width || !canvas.height) resizeTxCanvas();
   else { const ctx = canvas.getContext('2d', { alpha: false }); ctx.imageSmoothingEnabled = false; const source = state.txRasterSize, dest = source * state.txScale; ctx.drawImage(state.txStaging, logicalX, logicalY, source, source, logicalX * state.txScale, logicalY * state.txScale, dest, dest); }
-  // Monotonic timestamp used only by the adaptive scheduler. Initial grid paints
-  // count too, so the first animated replacement cannot immediately overwrite a
-  // tile the receiver has barely had time to see.
   state.txCellPaintedAt[index] = performance.now();
   state.txLastItem = item; updateTxMeta();
 }
-
 function updateModeBadge() {
   if (selectedColorMode() === '8') $('colorBadge').textContent = '8 STATI · 3 CANALI EXP';
   else if (isAdaptiveMode()) $('colorBadge').textContent = '4 STATI · ADAPTIVE';
-  else $('colorBadge').textContent = '4 COLORI · 2 CANALI';
+  else $('colorBadge').textContent = '4 STATI · STABILE';
 }
 function updateTxMeta() {
   if (!state.encoder || !state.txLastItem) { updateModeBadge(); return; }
@@ -127,7 +139,6 @@ function updateTxMeta() {
   $('txFrame').textContent = `QR V${state.txLastItem.raster.version} ECC ${QR_ECC} · ${state.meta.visualStates} stati / ${channels} canali · payload ${state.encoder.chunkSize} B · ${state.txSlots} QR · ${fpsText} · ~${theoreticalKiB.toFixed(1)} KiB/s fountain ottici · ${actual} simboli/s generati${genText}`;
   updateModeBadge();
 }
-
 async function makeTxItem(generation) {
   if (!state.encoder || generation !== state.txGeneration) return null;
   const channels = state.meta.visualStates === 8 ? 3 : 2;
@@ -138,7 +149,6 @@ async function makeTxItem(generation) {
   if (generation !== state.txGeneration) return null;
   return { symbolIds, degrees: symbols.map(symbol => symbol.indices.length), raster };
 }
-
 async function rebuildTxGrid(reason = 'layout') {
   if (!state.encoder) return;
   const resume = state.transmitting; state.transmitting = false; const generation = ++state.txGeneration;
@@ -154,7 +164,6 @@ async function rebuildTxGrid(reason = 'layout') {
   log(`TX ${reason}: ${state.txSlots} QR (${state.txCols}x${state.txRows}) · ${mode} · ${state.meta.visualStates} stati · ${channels} simboli/QR · ${state.encoder.chunkSize} B · ${scheduler}`);
   if (resume && generation === state.txGeneration) { state.transmitting = true; state.txStartedAt = performance.now(); state.txSymbolsShown = 0; void txLoop(generation); }
 }
-
 async function configureSelectedFile(reason = 'configurazione') {
   if (!state.selectedFile) return;
   stopTransmit();
@@ -174,11 +183,6 @@ async function prepareFile(file) {
   const bytes = new Uint8Array(await file.arrayBuffer()); const hash = await sha256Hex(bytes); state.selectedFile = { name: file.name, bytes, hash };
   await configureSelectedFile('file selezionato');
 }
-
-// Standard mode preserves the original round-robin timing. Adaptive mode uses
-// the same round-robin order but generates the next QR BEFORE waiting for that
-// tile's dwell deadline. The receiver therefore sees a stable old QR while CPU
-// work happens, and the paint itself becomes the only optical transition.
 async function txLoop(generation) {
   while (state.transmitting && generation === state.txGeneration) {
     const fpsPerCode = selectedFps(); const cellIndex = state.txCellCursor; const started = performance.now();
@@ -186,16 +190,13 @@ async function txLoop(generation) {
       const item = await makeTxItem(generation); if (!item) break;
       const generationMs = performance.now() - started;
       state.txGenerationMsEma = state.txGenerationMsEma ? state.txGenerationMsEma * 0.85 + generationMs * 0.15 : generationMs;
-
       if (isAdaptiveMode()) {
         const nextPaintAt = adaptiveNextPaintAt(state.txCellPaintedAt[cellIndex], fpsPerCode);
         await sleep(Math.max(0, nextPaintAt - performance.now()));
         if (!state.transmitting || generation !== state.txGeneration) break;
       }
-
       paintTxCell(cellIndex, item); state.txCellCursor = (cellIndex + 1) % state.txSlots; state.txSymbolsShown += state.meta.visualStates === 8 ? 3 : 2;
     } catch (error) { state.transmitting = false; status('txStatus', `Errore QR colore: ${error.message}`, 'error'); log(`TX QR error: ${error.stack || error.message}`); break; }
-
     if (!state.transmitting || generation !== state.txGeneration) break;
     if (!isAdaptiveMode()) {
       const interval = 1000 / (fpsPerCode * state.txSlots); const spent = performance.now() - started;
@@ -223,52 +224,125 @@ async function settingsChanged(kind) {
   else updateTxMeta();
 }
 
-function terminateWorkers() { for (const worker of state.workers) worker?.terminate(); state.workers = []; state.workerBusy = []; state.workerCursor = 0; }
+// ---- RX ROI + worker pool ---------------------------------------------------
+// Full-frame scans are now acquisition/recovery operations. Once ZXing returns
+// QR positions, most frames are decoded as small crops. A crop task keeps color
+// decoding enabled; a full scan skips chroma to free the worker sooner.
+function desiredRxWorkerCount() { return workerCountForHardware(navigator.hardwareConcurrency); }
+function terminateWorkers() {
+  for (const worker of state.workers) worker?.terminate();
+  state.workers = []; state.workerBusy = []; state.workerTasks = []; state.workerCursor = 0; state.rxWorkerCount = 0;
+}
+function nextFreeWorker() {
+  for (let offset = 0; offset < state.workers.length; offset++) {
+    const index = (state.workerCursor + offset) % state.workers.length;
+    if (!state.workerBusy[index]) { state.workerCursor = (index + 1) % state.workers.length; return index; }
+  }
+  return -1;
+}
+function busyWorkerCount() { return state.workerBusy.reduce((sum, busy) => sum + (busy ? 1 : 0), 0); }
 function renderRxStats() {
   const decoder = state.rxDecoder; const distinct = decoder?.framesNew || 0, dup = decoder?.framesDup || 0, solved = decoder?.solvedCount || 0, total = decoder?.sourceCount || 0, target = total ? estimatedFountainTarget(total) : 0;
   const c1Pct = state.rxColor1Candidates ? Math.round(state.rxColor1Decoded * 100 / state.rxColor1Candidates) : 0; const c2Pct = state.rxColor2Candidates ? Math.round(state.rxColor2Decoded * 100 / state.rxColor2Candidates) : 0;
   const elapsed = decoder ? Math.max(0.001, (performance.now() - state.rxStartedAt) / 1000) : 0; const fountainKiB = decoder && elapsed ? (distinct * decoder.chunkSize / 1024 / elapsed) : 0;
   const sep1 = state.rxColor1Separation ? ` sep1 ${state.rxColor1Separation.toFixed(2)}` : ''; const sep2 = state.rxColor2Separation ? ` sep2 ${state.rxColor2Separation.toFixed(2)}` : '';
-  $('rxStats').textContent = `${distinct} distinti · ${dup} duplicati · base ${state.rxBaseDecoded} · C1 ${state.rxColor1Decoded}/${state.rxColor1Candidates} (${c1Pct}%)${sep1} · C2 ${state.rxColor2Decoded}/${state.rxColor2Candidates} (${c2Pct}%)${sep2} · ${fountainKiB.toFixed(1)} KiB/s fountain · ${state.rxCaptured} frame · ${state.rxDroppedBusy} saltati · ${state.rxPacketRejected} rifiutati · peeling ${solved}/${total || '—'} · target ~${target || '—'}`;
+  const regions = state.roiTracker.active(performance.now()).length; const peak = state.roiTracker.peakRegions;
+  const cropPct = state.rxCropTasks ? Math.round(state.rxCropHits * 100 / state.rxCropTasks) : 0;
+  $('rxStats').textContent = `${distinct} distinti · ${dup} duplicati · base ${state.rxBaseDecoded} · C1 ${state.rxColor1Decoded}/${state.rxColor1Candidates} (${c1Pct}%)${sep1} · C2 ${state.rxColor2Decoded}/${state.rxColor2Candidates} (${c2Pct}%)${sep2} · ${fountainKiB.toFixed(1)} KiB/s · ROI ${regions}/${peak} · crop ${state.rxCropHits}/${state.rxCropTasks} (${cropPct}%) · full ${state.rxFullScans} · worker ${busyWorkerCount()}/${state.rxWorkerCount} · ${state.rxDroppedBusy} frame saturi · peeling ${solved}/${total || '—'} · target ~${target || '—'}`;
 }
-
+function releaseWorkerTask(index) {
+  const task = state.workerTasks[index];
+  if (task?.regionId != null) state.roiTracker.markDone(task.regionId);
+  state.workerTasks[index] = null;
+  state.workerBusy[index] = false;
+}
 function ensureWorkers() {
   if (state.workers.length) return;
-  for (let i = 0; i < RX_WORKERS; i++) {
+  const workerCount = desiredRxWorkerCount(); state.rxWorkerCount = workerCount;
+  for (let i = 0; i < workerCount; i++) {
     const worker = new Worker(new URL('./qr-worker.js', import.meta.url), { type: 'module' });
     worker.onmessage = event => {
-      const { id, ready, symbols = [], baseCount = 0, eightBase = 0,
+      const {
+        id, ready, mode = 'full', regionId = null, detections = [], symbols = [], baseCount = 0, eightBase = 0,
         color1Candidates = 0, color1Count = 0, color1Separation = 0,
-        color2Candidates = 0, color2Count = 0, color2Separation = 0, error } = event.data || {};
-      if (id === -1) { if (ready) log(`ZXing worker ${i + 1}/${RX_WORKERS} pronto · 4/8 stati · 2 assi cromatici`); else { state.rxWorkerErrors++; status('rxStatus', `Decoder ZXing/colore non si inizializza: ${error}`, 'error'); log(`Worker init error: ${error}`); } return; }
-      state.workerBusy[i] = false; if (error) { state.rxWorkerErrors++; if (state.rxWorkerErrors <= 3) log(`ZXing worker error: ${error}`); }
+        color2Candidates = 0, color2Count = 0, color2Separation = 0, error
+      } = event.data || {};
+      if (id === -1) {
+        if (ready) log(`ZXing worker ${i + 1}/${workerCount} pronto · ROI/crop + colore`);
+        else { state.rxWorkerErrors++; status('rxStatus', `Decoder ZXing/colore non si inizializza: ${error}`, 'error'); log(`Worker init error: ${error}`); }
+        return;
+      }
+      releaseWorkerTask(i);
+      if (detections.length) state.roiTracker.observe(detections, performance.now());
+      if (mode === 'crop' && baseCount > 0) state.rxCropHits++;
+      if (error) { state.rxWorkerErrors++; if (state.rxWorkerErrors <= 3) log(`ZXing worker error: ${error}`); }
       state.rxBaseDecoded += baseCount; state.rxEightBase += eightBase;
       state.rxColor1Candidates += color1Candidates; state.rxColor1Decoded += color1Count; if (color1Separation > 0) state.rxColor1Separation = color1Separation;
       state.rxColor2Candidates += color2Candidates; state.rxColor2Decoded += color2Count; if (color2Separation > 0) state.rxColor2Separation = color2Separation;
-      if (symbols.length && !state.rxComplete) void onDecodedSymbols(symbols); renderRxStats();
+      if (symbols.length && !state.rxComplete) void onDecodedSymbols(symbols);
+      renderRxStats();
     };
-    worker.onerror = event => { state.workerBusy[i] = false; state.rxWorkerErrors++; status('rxStatus', `Worker QR: ${event.message}`, 'error'); log(`Worker QR fatal: ${event.message}`); };
-    state.workers.push(worker); state.workerBusy.push(false);
+    worker.onerror = event => {
+      releaseWorkerTask(i); state.rxWorkerErrors++;
+      status('rxStatus', `Worker QR: ${event.message}`, 'error'); log(`Worker QR fatal: ${event.message}`);
+    };
+    state.workers.push(worker); state.workerBusy.push(false); state.workerTasks.push(null);
   }
 }
-function nextFreeWorker() { for (let offset = 0; offset < state.workers.length; offset++) { const index = (state.workerCursor + offset) % state.workers.length; if (!state.workerBusy[index]) { state.workerCursor = (index + 1) % state.workers.length; return index; } } return -1; }
+function submitWorkerImage(workerIndex, image, task) {
+  const id = state.frameId++;
+  state.workerBusy[workerIndex] = true; state.workerTasks[workerIndex] = task;
+  state.workers[workerIndex].postMessage({
+    id, buf: image.data.buffer, w: image.width, h: image.height,
+    mode: task.mode, regionId: task.regionId ?? null,
+    originX: task.originX || 0, originY: task.originY || 0,
+    decodeColor: task.mode === 'crop'
+  }, [image.data.buffer]);
+}
 
-async function startCamera() {
-  if (state.receiving) return; if (!navigator.mediaDevices?.getUserMedia) { status('rxStatus', 'La fotocamera richiede HTTPS e un browser compatibile.', 'error'); return; }
-  ensureWorkers(); const base = { facingMode: { ideal: 'environment' }, width: { ideal: RX_CAPTURE_WIDTH }, height: { ideal: Math.round(RX_CAPTURE_WIDTH * 9 / 16) } };
+async function tuneCameraTrack(track) {
   try {
-    try { state.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...base, frameRate: { exact: RX_CAPTURE_FPS } } }); }
-    catch { state.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...base, frameRate: { ideal: RX_CAPTURE_FPS } } }); }
-    const video = $('rxVideo'); video.srcObject = state.stream; await video.play(); state.track = state.stream.getVideoTracks()[0] || null; state.receiving = true; state.captureGeneration++; state.rxStartedAt = performance.now(); requestWakeLock();
-    const settings = state.track?.getSettings?.() || {}; status('rxStatus', `Camera ${settings.width || video.videoWidth}×${settings.height || video.videoHeight}@${Math.round(settings.frameRate || 0)} · ZXing base + fino a 2 QR cromatici.`, 'ok'); log(`RX camera: ${state.track?.label || 'video'} · ${video.videoWidth}x${video.videoHeight}`); scheduleCapture(state.captureGeneration);
+    const caps = track?.getCapabilities?.();
+    if (caps?.focusMode?.includes?.('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+  } catch (error) { log(`Focus continuo non applicato: ${error.message}`); }
+}
+async function getCameraStream() {
+  const base = { facingMode: { ideal: 'environment' }, width: { ideal: RX_CAPTURE_WIDTH }, height: { ideal: Math.round(RX_CAPTURE_WIDTH * 9 / 16) } };
+  try { return await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...base, frameRate: { exact: RX_CAPTURE_FPS_TARGET } } }); }
+  catch (firstError) {
+    log(`Camera ${RX_CAPTURE_FPS_TARGET} fps exact non disponibile: ${firstError.message}`);
+    try { return await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...base, frameRate: { exact: RX_CAPTURE_FPS_FALLBACK } } }); }
+    catch { return navigator.mediaDevices.getUserMedia({ audio: false, video: { ...base, frameRate: { ideal: RX_CAPTURE_FPS_TARGET } } }); }
+  }
+}
+async function startCamera() {
+  if (state.receiving) return;
+  if (!navigator.mediaDevices?.getUserMedia) { status('rxStatus', 'La fotocamera richiede HTTPS e un browser compatibile.', 'error'); return; }
+  ensureWorkers(); state.roiTracker.reset(); state.rxFullScans = 0; state.rxCropTasks = 0; state.rxCropHits = 0;
+  try {
+    state.stream = await getCameraStream();
+    const video = $('rxVideo'); video.srcObject = state.stream; await video.play();
+    state.track = state.stream.getVideoTracks()[0] || null; await tuneCameraTrack(state.track);
+    state.receiving = true; state.captureGeneration++; state.rxStartedAt = performance.now(); requestWakeLock();
+    const settings = state.track?.getSettings?.() || {};
+    status('rxStatus', `Camera ${settings.width || video.videoWidth}×${settings.height || video.videoHeight}@${Math.round(settings.frameRate || 0)} · ${state.rxWorkerCount} worker · acquisizione full-frame + tracking ROI.`, 'ok');
+    log(`RX camera: ${state.track?.label || 'video'} · ${video.videoWidth}x${video.videoHeight} · ${Math.round(settings.frameRate || 0)} fps · ${state.rxWorkerCount} worker`);
+    scheduleCapture(state.captureGeneration);
   } catch (error) { status('rxStatus', `Fotocamera non disponibile: ${error.message}`, 'error'); log(`RX camera error: ${error.name} ${error.message}`); }
 }
-function stopCamera() { state.receiving = false; state.captureGeneration++; state.stream?.getTracks().forEach(track => track.stop()); state.stream = null; state.track = null; $('rxVideo').srcObject = null; if (!state.rxDecoder?.complete && !state.rxFinalizing && !state.rxComplete) status('rxStatus', 'Fotocamera ferma.'); releaseWakeLockIfIdle(); }
+function stopCamera() {
+  state.receiving = false; state.captureGeneration++;
+  state.stream?.getTracks().forEach(track => track.stop()); state.stream = null; state.track = null; $('rxVideo').srcObject = null;
+  if (!state.rxDecoder?.complete && !state.rxFinalizing && !state.rxComplete) status('rxStatus', 'Fotocamera ferma.');
+  releaseWakeLockIfIdle();
+}
 function resetReceiver() {
-  state.rxDecoder = null; state.rxMeta = null; state.rxCaptured = 0; state.rxDroppedBusy = 0; state.rxBaseDecoded = 0; state.rxEightBase = 0;
+  state.rxDecoder = null; state.rxMeta = null; state.rxCaptured = 0; state.rxDroppedBusy = 0; state.rxFullScans = 0; state.rxCropTasks = 0; state.rxCropHits = 0;
+  state.rxBaseDecoded = 0; state.rxEightBase = 0; state.roiTracker.reset();
   state.rxColor1Candidates = 0; state.rxColor1Decoded = 0; state.rxColor1Separation = 0; state.rxColor2Candidates = 0; state.rxColor2Decoded = 0; state.rxColor2Separation = 0;
   state.rxPacketRejected = 0; state.rxWorkerErrors = 0; state.expectedHash = null; state.rxStartedAt = performance.now(); state.rxFinalizing = false; state.rxComplete = false; $('rxProgress').value = 0;
-  if (state.downloadUrl) URL.revokeObjectURL(state.downloadUrl); state.downloadUrl = null; const download = $('download'); download.hidden = true; download.removeAttribute('href'); renderRxStats(); status('rxStatus', state.receiving ? 'Ricevitore azzerato. Continua a inquadrare l’intera griglia colorata.' : 'Ricevitore azzerato.'); log('RX reset');
+  if (state.downloadUrl) URL.revokeObjectURL(state.downloadUrl); state.downloadUrl = null; const download = $('download'); download.hidden = true; download.removeAttribute('href');
+  renderRxStats(); status('rxStatus', state.receiving ? 'Ricevitore azzerato. Riacquisizione ROI in corso.' : 'Ricevitore azzerato.'); log('RX reset');
 }
 
 async function acceptPacket(packet) {
@@ -280,7 +354,7 @@ async function acceptPacket(packet) {
   const added = state.rxDecoder.addSymbol(packet.symbolId, packet.payload); if (!added) return;
   const target = estimatedFountainTarget(state.rxDecoder.sourceCount); const estimatedFraction = state.rxDecoder.complete ? 1 : Math.min(0.99, state.rxDecoder.framesNew / target); const pct = Math.floor(estimatedFraction * 1000) / 10; $('rxProgress').value = pct;
   const elapsed = Math.max(0.001, (performance.now() - state.rxStartedAt) / 1000); const validRate = state.rxDecoder.framesNew / elapsed; const fountainKiB = validRate * state.rxDecoder.chunkSize / 1024;
-  renderRxStats(); status('rxStatus', `Ricezione ~${pct}% · ${state.rxDecoder.framesNew}/${target} distinti · ${validRate.toFixed(1)} simboli/s · ${fountainKiB.toFixed(1)} KiB/s · ${packet.visualStates} stati`, 'ok');
+  renderRxStats(); status('rxStatus', `Ricezione ~${pct}% · ${state.rxDecoder.framesNew}/${target} distinti · ${validRate.toFixed(1)} simboli/s · ${fountainKiB.toFixed(1)} KiB/s · ROI ${state.roiTracker.regions.length}`, 'ok');
   if (!state.rxDecoder.complete) return;
 
   state.rxFinalizing = true; $('rxProgress').value = 100; stopCamera();
@@ -291,7 +365,7 @@ async function acceptPacket(packet) {
   if (state.downloadUrl) URL.revokeObjectURL(state.downloadUrl); state.downloadUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' })); const link = $('download'); link.href = state.downloadUrl; link.download = state.rxMeta.fileName || 'qcolortrasfer.bin'; link.hidden = false; link.textContent = `SCARICA ${link.download} (${formatBytes(bytes.length)})`;
   const effectiveKiB = bytes.length / 1024 / completeElapsed; state.rxComplete = true; state.rxFinalizing = false;
   status('rxStatus', `COMPLETATO · ${formatBytes(bytes.length)} · ${completeElapsed.toFixed(2)} s · ${effectiveKiB.toFixed(1)} KiB/s file · SHA-256 ${hash && state.expectedHash ? 'OK' : 'N/D'} · ${state.rxDecoder.framesNew} simboli distinti`, 'ok');
-  log(`RX completo: ${link.download}, ${bytes.length} byte, ${completeElapsed.toFixed(3)} s, ${effectiveKiB.toFixed(2)} KiB/s, ${state.rxDecoder.framesNew} simboli distinti, states=${state.rxMeta.visualStates}`);
+  log(`RX completo: ${link.download}, ${bytes.length} byte, ${completeElapsed.toFixed(3)} s, ${effectiveKiB.toFixed(2)} KiB/s, ${state.rxDecoder.framesNew} simboli distinti, states=${state.rxMeta.visualStates}, ROIpeak=${state.roiTracker.peakRegions}`);
 }
 async function onDecodedSymbols(symbols) {
   for (const raw of symbols) {
@@ -303,12 +377,44 @@ async function onDecodedSymbols(symbols) {
 }
 
 function captureFrame() {
-  const video = $('rxVideo'), width = video.videoWidth, height = video.videoHeight; if (!width || !height || state.rxFinalizing || state.rxComplete) return; const workerIndex = nextFreeWorker(); state.rxCaptured++;
-  if (workerIndex < 0) { state.rxDroppedBusy++; renderRxStats(); return; }
-  if (!state.captureCanvas) state.captureCanvas = document.createElement('canvas'); const canvas = state.captureCanvas; if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
-  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true }); ctx.drawImage(video, 0, 0, width, height); const image = ctx.getImageData(0, 0, width, height); const id = state.frameId++; state.workerBusy[workerIndex] = true; state.workers[workerIndex].postMessage({ id, buf: image.data.buffer, w: width, h: height }, [image.data.buffer]);
+  const video = $('rxVideo'), width = video.videoWidth, height = video.videoHeight;
+  if (!width || !height || state.rxFinalizing || state.rxComplete) return;
+  state.rxCaptured++;
+  if (!state.captureCanvas) state.captureCanvas = document.createElement('canvas');
+  const canvas = state.captureCanvas;
+  if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; state.roiTracker.reset(); }
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true }); ctx.drawImage(video, 0, 0, width, height);
+  const now = performance.now(); state.roiTracker.prune(now);
+  let submitted = 0;
+
+  if (state.roiTracker.shouldFullScan(now)) {
+    const workerIndex = nextFreeWorker();
+    if (workerIndex >= 0) {
+      const image = ctx.getImageData(0, 0, width, height); state.roiTracker.noteFullScan(now); state.rxFullScans++;
+      submitWorkerImage(workerIndex, image, { mode: 'full', regionId: null, originX: 0, originY: 0 }); submitted++;
+    }
+  }
+
+  const freeSlots = Math.max(0, state.rxWorkerCount - busyWorkerCount());
+  const regions = state.roiTracker.chooseForCrops(freeSlots, now);
+  for (const region of regions) {
+    const workerIndex = nextFreeWorker(); if (workerIndex < 0) break;
+    const crop = state.roiTracker.cropFor(region, width, height);
+    const image = ctx.getImageData(crop.x, crop.y, crop.w, crop.h);
+    if (!state.roiTracker.markSubmitted(region.id, now)) continue;
+    state.rxCropTasks++;
+    submitWorkerImage(workerIndex, image, { mode: 'crop', regionId: region.id, originX: crop.x, originY: crop.y }); submitted++;
+  }
+
+  if (submitted === 0 && busyWorkerCount() >= state.rxWorkerCount) state.rxDroppedBusy++;
+  if (state.rxCaptured % 15 === 0) renderRxStats();
 }
-function scheduleCapture(generation) { if (!state.receiving || generation !== state.captureGeneration) return; const video = $('rxVideo'); const next = () => { if (!state.receiving || generation !== state.captureGeneration) return; captureFrame(); scheduleCapture(generation); }; if (typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(next); else requestAnimationFrame(next); }
+function scheduleCapture(generation) {
+  if (!state.receiving || generation !== state.captureGeneration) return;
+  const video = $('rxVideo');
+  const next = () => { if (!state.receiving || generation !== state.captureGeneration) return; captureFrame(); scheduleCapture(generation); };
+  if (typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(next); else requestAnimationFrame(next);
+}
 
 async function runSelfTest() {
   try {
@@ -319,11 +425,24 @@ async function runSelfTest() {
     const meta8 = { ...meta4, visualStates: 8 }; const q0 = encodeOpticalPacket(meta8, 2, enc.symbol(2).data), q1 = encodeOpticalPacket(meta8, 3, enc.symbol(3).data), q2 = encodeOpticalPacket(meta8, 4, enc.symbol(4).data);
     if (decodeOpticalPacket(q0).visualStates !== 8) throw new Error('flag 8-state non presente'); const triple = await createTripleQrRaster(q0, q1, q2); if (triple.visualStates !== 8 || triple.channels !== 3 || triple.coloredModules <= 0) throw new Error('triple color non attivo');
     const dwell20 = adaptiveDwellMs(20); if (dwell20 < 70 || adaptiveGridCap(20) !== 4) throw new Error('scheduler ADAPTIVE non coerente');
-    status('selfTest', `Autotest: OK · payload 1024 B · 4 stati STABILE/ADAPTIVE + 8 stati EXP · QR V${triple.version} ECC ${triple.ecc} · dwell 20fps=${Math.round(dwell20)}ms · fino a 20 fps target.`, 'ok'); log(`Autotest 4/8-state + adaptive OK · QR V${triple.version}, ${triple.modules} moduli`);
+    const roi = new RoiTracker(); roi.observe([{ x: 20, y: 20, w: 100, h: 100 }], 0); if (roi.regions.length !== 1 || workerCountForHardware(8) !== 4) throw new Error('ROI/worker pool non coerente');
+    status('selfTest', `Autotest: OK · payload 1024 B · 4 stati STABILE/ADAPTIVE + 8 stati EXP · QR V${triple.version} · RX ROI + pool 2–4 worker.`, 'ok');
+    log(`Autotest 4/8-state + ROI OK · QR V${triple.version}, ${triple.modules} moduli`);
   } catch (error) { status('selfTest', `Autotest: ERRORE · ${error.message}`, 'error'); log(`Autotest FAIL: ${error.stack || error.message}`); }
 }
+
 function updateNetworkState() { $('netState').textContent = navigator.onLine ? 'rete: online' : 'rete: offline'; }
-async function setupPwa() { updateNetworkState(); window.addEventListener('online', updateNetworkState); window.addEventListener('offline', updateNetworkState); const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; if (standalone) $('pwaState').textContent = 'app: installata'; if ('serviceWorker' in navigator && location.protocol !== 'file:') { try { const registration = await navigator.serviceWorker.register('./sw.js', { scope: './' }); $('pwaState').textContent = standalone ? 'app: installata' : 'app: offline pronta'; registration.update().catch(() => {}); log(`Service worker registrato: ${registration.scope}`); } catch (error) { $('pwaState').textContent = 'app: SW errore'; log(`Service worker error: ${error.message}`); } } window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); state.installPrompt = event; $('installPwa').hidden = false; }); window.addEventListener('appinstalled', () => { $('installPwa').hidden = true; $('pwaState').textContent = 'app: installata'; state.installPrompt = null; }); $('installPwa').addEventListener('click', async () => { if (!state.installPrompt) return; await state.installPrompt.prompt(); await state.installPrompt.userChoice; state.installPrompt = null; $('installPwa').hidden = true; }); }
+async function setupPwa() {
+  updateNetworkState(); window.addEventListener('online', updateNetworkState); window.addEventListener('offline', updateNetworkState);
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; if (standalone) $('pwaState').textContent = 'app: installata';
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    try { const registration = await navigator.serviceWorker.register('./sw.js', { scope: './' }); $('pwaState').textContent = standalone ? 'app: installata' : 'app: offline pronta'; registration.update().catch(() => {}); log(`Service worker registrato: ${registration.scope}`); }
+    catch (error) { $('pwaState').textContent = 'app: SW errore'; log(`Service worker error: ${error.message}`); }
+  }
+  window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); state.installPrompt = event; $('installPwa').hidden = false; });
+  window.addEventListener('appinstalled', () => { $('installPwa').hidden = true; $('pwaState').textContent = 'app: installata'; state.installPrompt = null; });
+  $('installPwa').addEventListener('click', async () => { if (!state.installPrompt) return; await state.installPrompt.prompt(); await state.installPrompt.userChoice; state.installPrompt = null; $('installPwa').hidden = true; });
+}
 
 $('fileInput').addEventListener('change', event => { const file = event.target.files?.[0]; if (file) prepareFile(file).catch(error => { status('txStatus', error.message, 'error'); log(`TX prepare error: ${error.stack || error.message}`); }); });
 $('startTx').addEventListener('click', startTransmit); $('stopTx').addEventListener('click', stopTransmit); $('fullTx').addEventListener('click', toggleFullscreenTx);
@@ -332,5 +451,5 @@ $('startRx').addEventListener('click', startCamera); $('stopRx').addEventListene
 window.addEventListener('resize', scheduleTxDisplayRefresh); window.addEventListener('orientationchange', scheduleTxDisplayRefresh); document.addEventListener('fullscreenchange', scheduleTxDisplayRefresh); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && (state.transmitting || state.receiving)) requestWakeLock(); });
 window.addEventListener('beforeunload', () => { stopTransmit(); stopCamera(); terminateWorkers(); if (state.downloadUrl) URL.revokeObjectURL(state.downloadUrl); });
 
-$('capacity').textContent = `payload fino a 1280 B · 4 STABILE/ADAPTIVE · 8 EXP · max 20 fps target`;
+$('capacity').textContent = `1024 B default · 4 STABILE default · RX ROI · 2–4 worker · camera fino a 60 fps`;
 updateModeBadge(); resetReceiver(); setupPwa(); void runSelfTest();
