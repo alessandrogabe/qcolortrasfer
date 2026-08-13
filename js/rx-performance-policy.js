@@ -28,8 +28,6 @@ export function upgradeVideoConstraints(constraints) {
 
   const widthIdeal = Number(video.width?.ideal);
   const heightIdeal = Number(video.height?.ideal);
-  // Only rewrite qcolortrasfer's own capture profile, never arbitrary camera
-  // requests from another component that might share this page in the future.
   if (widthIdeal !== 1280 || heightIdeal !== 960) return constraints;
 
   return {
@@ -51,9 +49,6 @@ function installCameraUpgrade() {
     media.getUserMedia = wrapped;
     media.__qcolorPerformanceWrapped = true;
   } catch {
-    // Some WebKit builds expose methods through a non-writable instance. A
-    // configurable own property is still standards-safe; if that too fails we
-    // simply keep the original 1280 profile rather than breaking camera access.
     try {
       Object.defineProperty(media, 'getUserMedia', { configurable: true, value: wrapped });
       Object.defineProperty(media, '__qcolorPerformanceWrapped', { configurable: true, value: true });
@@ -61,12 +56,15 @@ function installCameraUpgrade() {
   }
 }
 
-function armRxWorkerOverride() {
+function armRxPerformancePolicy() {
   const target = desiredRxWorkerTarget(navigator.hardwareConcurrency);
   globalThis.__QCOLOR_RX_WORKER_TARGET = target;
-  // app.js calls ensureWorkers synchronously in its START handler. Clear the
-  // transient override immediately afterwards so TX worker policy and self-tests
-  // continue to see the browser's real hardwareConcurrency value.
+  // Keep full-frame acquisition warm for the first ~2.8 s after initial lock so
+  // a 6-QR scene cannot be mistaken for a complete 4-QR lock after one scan.
+  globalThis.__QCOLOR_RX_WARM_ACQUIRE = true;
+
+  // app.js calls ensureWorkers synchronously in its START handler. Clear only
+  // the worker override afterwards; warm-acquire remains enabled for the session.
   queueMicrotask(() => {
     try { delete globalThis.__QCOLOR_RX_WORKER_TARGET; }
     catch { globalThis.__QCOLOR_RX_WORKER_TARGET = undefined; }
@@ -77,9 +75,9 @@ function updateRuntimeLabels() {
   const capacity = document.getElementById('capacity');
   if (capacity) capacity.textContent = capacity.textContent.replace('RX 1280@60 / 2–6 worker', 'RX 1920 target / pool fino a 6 worker');
   const rxNote = document.querySelector('#rxView .note');
-  if (rxNote) rxNote.innerHTML = '<strong>RX FAST:</strong> acquisizione fino a 1920 px quando disponibile, pool fino a 6 worker, full scan rapido durante l’aggancio e crop ROI sul percorso caldo. B/N usa solo il QR base; il colore riusa la geometria base per C1/C2.';
+  if (rxNote) rxNote.innerHTML = '<strong>RX FAST:</strong> acquisizione fino a 1920 px quando disponibile, pool fino a 6 worker e full scan più frequente nei primi secondi per agganciare tutti i 4/6 QR; poi crop ROI sul percorso caldo. B/N usa solo il QR base; il colore riusa la geometria base per C1/C2.';
 }
 
 installCameraUpgrade();
-document.getElementById('startRx')?.addEventListener('click', armRxWorkerOverride, { capture: true });
+document.getElementById('startRx')?.addEventListener('click', armRxPerformancePolicy, { capture: true });
 window.addEventListener('load', updateRuntimeLabels, { once: true });
