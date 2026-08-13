@@ -6,9 +6,10 @@
 // optical view pinned to the iOS *visualViewport* and then app.js starts TX via
 // its existing handler. No second transmission engine is introduced here.
 //
-// iPhone/iPad browsers do not reliably fullscreen arbitrary DOM elements, so
-// this is deliberately an optical VIEW rather than a Fullscreen API feature.
-// Only QR + START / STOP / RESET / ESCI are visible while the view is active.
+// v2.3 adds an optical safe area: high-density/tall displays get a larger side
+// guard so curved edges and panel fall-off do not cut into the finder patterns.
+// The QR tiles themselves use a shared internal quiet zone, so this extra room
+// is taken from the outside rather than wasted between neighboring QR codes.
 
 const root = document.documentElement;
 const body = document.body;
@@ -34,6 +35,20 @@ function visibleViewportSize() {
   };
 }
 
+function opticalEdgeGuard(width, height) {
+  const dpr = Math.max(1, Number(window.devicePixelRatio) || 1);
+  const tall = height / Math.max(1, width) > 1.8;
+  // Curved/high-density phones need more horizontal protection. iPhones around
+  // DPR3 keep a smaller guard so the proven 4-QR B/N baseline does not shrink
+  // unnecessarily; DPR3.5+ displays receive the larger edge-safe envelope.
+  const xRatio = dpr >= 3.5 || tall && dpr >= 3.25 ? 0.055 : 0.030;
+  const yRatio = 0.022;
+  return {
+    x: Math.max(10, Math.round(width * xRatio)),
+    y: Math.max(8, Math.round(height * yRatio)),
+  };
+}
+
 function requestTxLayoutRefresh() {
   cancelAnimationFrame(refreshRaf);
   refreshRaf = requestAnimationFrame(() => {
@@ -44,8 +59,11 @@ function requestTxLayoutRefresh() {
 function syncOpticalViewport() {
   if (!active || !shell) return;
   const { width, height } = visibleViewportSize();
+  const guard = opticalEdgeGuard(width, height);
   shell.style.setProperty('--tx-optical-width', `${width}px`);
   shell.style.setProperty('--tx-optical-height', `${height}px`);
+  shell.style.setProperty('--tx-edge-x', `${guard.x}px`);
+  shell.style.setProperty('--tx-edge-y', `${guard.y}px`);
   requestTxLayoutRefresh();
 }
 
@@ -82,6 +100,8 @@ export function exitTxOpticalView() {
   shell.removeAttribute('data-optical-view');
   shell.style.removeProperty('--tx-optical-width');
   shell.style.removeProperty('--tx-optical-height');
+  shell.style.removeProperty('--tx-edge-x');
+  shell.style.removeProperty('--tx-edge-y');
   if (marker?.parentNode) {
     marker.parentNode.insertBefore(shell, marker);
     marker.remove();
