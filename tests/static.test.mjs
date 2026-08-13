@@ -29,18 +29,35 @@ test('UI exposes B/W baseline plus color modes, with 24 fps and AUTO 4/6',async(
   assert.equal(MAX_GRID_CODES,6); assert.equal(VISUAL_STATES_MONO,2); assert.equal(VISUAL_STATES_4,4); assert.equal(VISUAL_STATES_8,8);
 });
 
-test('fullscreen shell contains only TX stage and compact ordered controls',async()=>{
+test('TX shell contains only optical stage and compact ordered controls',async()=>{
   const html=await readFile(root('index.html'),'utf8');
   const shell=html.match(/<div id="txFullscreenShell"[\s\S]*?<\/div>\s*<div id="txFrame"/)?.[0] || '';
   assert.match(shell,/id="txStage"/); assert.match(shell,/id="txFsControls"/);
   const start=shell.indexOf('id="fsStartTx"'), stop=shell.indexOf('id="fsStopTx"'), reset=shell.indexOf('id="fsResetTx"'), exit=shell.indexOf('id="fsExitTx"');
   assert.ok(start>=0&&start<stop&&stop<reset&&reset<exit);
-  const css=await readFile(root('styles.css'),'utf8');
-  assert.match(css,/tx-fullscreen-shell:fullscreen/); assert.match(css,/immersive-fallback/); assert.match(css,/overflow:hidden/); assert.match(css,/\.fs-start/);
 });
 
-test('UI shell switches modes through existing controls',async()=>{
+test('iOS optical controller portals TX shell and locks page pan',async()=>{
+  const js=await readFile(root('js/tx-optical-view.js'),'utf8');
+  assert.match(js,/visualViewport/); assert.match(js,/body\.appendChild\(shell\)/);
+  assert.match(js,/tx-optical-overlay/); assert.match(js,/tx-optical-active/);
+  assert.match(js,/touchmove/); assert.match(js,/passive: false/);
+  assert.match(js,/stopImmediatePropagation/); assert.match(js,/QR A TUTTO SCHERMO/);
+  assert.match(js,/window\.dispatchEvent\(new Event\('resize'\)\)/);
+});
+
+test('mobile CSS prevents workspace horizontal overflow and gives optical overlay the visible viewport',async()=>{
+  const css=await readFile(root('styles.css'),'utf8');
+  assert.match(css,/html,body\{[^}]*max-width:100%[^}]*overflow-x:hidden/);
+  assert.match(css,/#capacity\{[^}]*white-space:normal[^}]*overflow-wrap:anywhere/);
+  assert.match(css,/tx-fullscreen-shell\.tx-optical-overlay/);
+  assert.match(css,/--tx-optical-width/); assert.match(css,/--tx-optical-height/);
+  assert.match(css,/z-index:2147483647/); assert.match(css,/touch-action:none/);
+});
+
+test('UI shell loads optical view and switches modes through existing controls',async()=>{
   const js=await readFile(root('js/ui-shell.js'),'utf8');
+  assert.match(js,/import '\.\/tx-optical-view\.js'/);
   assert.match(js,/showAppView/); assert.match(js,/stopInactiveEngines/);
   assert.match(js,/stopTx/); assert.match(js,/stopRx/); assert.match(js,/dispatchEvent/);
 });
@@ -49,7 +66,7 @@ test('PWA manifest keeps relative GitHub Pages paths',async()=>{
   const manifest=JSON.parse(await readFile(root('manifest.webmanifest'),'utf8')); assert.equal(manifest.start_url,'./'); assert.equal(manifest.scope,'./'); const sizes=new Set(manifest.icons.map(icon=>icon.sizes)); assert.ok(sizes.has('192x192')); assert.ok(sizes.has('512x512'));
 });
 
-test('app wires mono/color QCT2, fullscreen controls, lookahead and atomic RX finalization',async()=>{
+test('app keeps mono/color QCT2, legacy fullscreen fallback, lookahead and atomic RX finalization',async()=>{
   const js=await readFile(root('js/app.js'),'utf8');
   assert.match(js,/packFileContainerV2/); assert.match(js,/encodeOpticalPacketV2/); assert.match(js,/unpackFileContainerV2/);
   assert.match(js,/channelsForVisualStates/); assert.match(js,/createQrRaster/); assert.match(js,/mode==='bw'\?2/);
@@ -71,8 +88,8 @@ test('TX raster worker supports ordinary mono and layered color QR',async()=>{
   assert.match(js,/visualStates === 2/); assert.match(js,/pixels\.buffer/);
 });
 
-test('service worker precaches complete v2.2 mono/fullscreen runtime',async()=>{
+test('service worker precaches complete v2.2.1 optical overlay runtime',async()=>{
   const sw=await readFile(root('sw.js'),'utf8');
-  assert.match(sw,/v2\.2\.0-mono-fullscreen/); assert.match(sw,/\.\/js\/ui-shell\.js/);
+  assert.match(sw,/v2\.2\.1-ios-optical-overlay/); assert.match(sw,/\.\/js\/ui-shell\.js/); assert.match(sw,/\.\/js\/tx-optical-view\.js/);
   assert.match(sw,/\.\/js\/high-throughput\.js/); assert.match(sw,/\.\/js\/tx-worker\.js/); assert.match(sw,/\.\/js\/rx-roi\.js/); assert.match(sw,/\.\/js\/qr-worker\.js/);
 });
