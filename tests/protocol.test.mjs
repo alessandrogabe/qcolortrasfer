@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   encodeOpticalPacket, encodeOpticalPacketV2, decodeOpticalPacket,
   packFileContainerV2, unpackFileContainerV2,
-  HEADER_BYTES, HEADER_BYTES_V2, FLAG_COLOR_8, FLAG_V2_COLOR_8
+  HEADER_BYTES, HEADER_BYTES_V2, FLAG_COLOR_8, FLAG_V2_COLOR_8, FLAG_V2_MONO
 } from '../js/protocol.js';
 
 test('QCT1 legacy packet round trip remains readable', () => {
@@ -40,6 +40,11 @@ test('8-state flags remain distinct in QCT1 and QCT2', () => {
   assert.ok(qct1[5] & FLAG_COLOR_8); assert.equal(decodeOpticalPacket(qct1).visualStates, 8);
   const qct2 = encodeOpticalPacketV2({streamId:1,sourceCount:1,chunkSize:32,containerLength:3,visualStates:8},0,new Uint8Array(32));
   assert.ok(qct2[5] & FLAG_V2_COLOR_8); assert.equal(decodeOpticalPacket(qct2).visualStates, 8);
+});
+
+test('QCT2 mono flag round-trips the one-channel B/W baseline', () => {
+  const qct2 = encodeOpticalPacketV2({streamId:7,sourceCount:1,chunkSize:32,containerLength:3,visualStates:2},4,new Uint8Array(32));
+  assert.ok(qct2[5] & FLAG_V2_MONO); assert.equal(qct2[5] & FLAG_V2_COLOR_8, 0); assert.equal(decodeOpticalPacket(qct2).visualStates, 2);
 });
 
 test('QCT2 source-count consistency is validated', () => {
