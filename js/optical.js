@@ -1,6 +1,7 @@
 // Standards-compliant QR optical layer. The base channel follows the proven
-// Decimen v0.3.0 approach (ordinary QR + ZXing). qcolortrasfer overlays one or
-// two additional QR channels in chroma while preserving base QR luminance.
+// Decimen v0.3.0 approach (ordinary QR + ZXing). qcolortrasfer can transmit the
+// same ordinary B/W baseline or overlay one/two additional QR channels in
+// chroma while preserving base QR luminance.
 
 import {
   COLOR_MODE_4, COLOR_MODE_8, rgbForState, rgbForState8
@@ -15,6 +16,7 @@ export const QR_MASK = 4;
 export const MAX_GRID_CODES = 6;
 export const MIN_AUTO_QR_SIDE = 150;
 export const VISUAL_STATES = 4;
+export const VISUAL_STATES_MONO = 2;
 export const VISUAL_STATES_4 = 4;
 export const VISUAL_STATES_8 = 8;
 export const COLOR_MODE = COLOR_MODE_4;
@@ -132,7 +134,10 @@ export async function createQrRaster(bytes) {
       pixels[offset] = 0; pixels[offset + 1] = 0; pixels[offset + 2] = 0; pixels[offset + 3] = 255;
     }
   }
-  return { pixels, size, version: qr.version, modules, totalModules: size, ecc: QR_ECC };
+  return {
+    pixels, size, version: qr.version, modules, totalModules: size, ecc: QR_ECC,
+    visualStates: VISUAL_STATES_MONO, channels: 1, coloredModules: 0, colorMode: 'mono'
+  };
 }
 
 export async function renderFrame(canvas, bytes) {
