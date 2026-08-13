@@ -1,48 +1,35 @@
 # qcolortrasfer
 
-PWA open source per trasferire file direttamente dallo schermo di un dispositivo alla fotocamera di un altro, senza Wi‑Fi, Bluetooth, account o backend per i dati del file.
+PWA open source MIT per trasferire file direttamente dallo schermo di un dispositivo alla fotocamera di un altro, senza Wi‑Fi, Bluetooth, account o backend dati.
 
-## Stato attuale: multi-QR a 4 colori / 2 canali
+## v1.4 beta: payload maggiore + terzo canale ottico
 
-La versione 1.3 mantiene il QR standard come canale ottico affidabile e aggiunge un secondo QR nello stesso quadrato tramite il colore.
+La baseline affidabile resta un QR standard letto da ZXing. qcolortrasfer sovrappone informazioni cromatiche ai soli moduli dati/ECC, lasciando finder/timing/alignment e moduli funzione in bianco/nero puro.
+
+- **4 stati / 2 canali (stabile):** luminanza + 1 bit cromatico = 2 QR logici nello stesso quadrato.
+- **8 stati / 3 canali (sperimentale):** luminanza + 2 assi cromatici = 3 QR logici nello stesso quadrato.
+- Ogni canale cromatico viene ricostruito come un vero QR e passato nuovamente a ZXing, quindi conserva ECC QR.
+- Payload selezionabile: **512 / 768 / 1024 / 1280 byte** per simbolo fountain; default 1024 B.
+- Velocità: **3 / 5 / 8 / 12 / 20 fps per QR**.
+- Griglia: 1 / 2 / 4 / 6 QR. AUTO riduce la densità nei profili 12/20 fps più pesanti; la scelta manuale è sempre rispettata.
 
 ```text
-FILE → SHA-256/QCT1 → LT robust-soliton →
-  [QR base: luminanza] + [QR secondario: crominanza]
-  → 1/2/4/6 quadrati simultanei → CAMERA
-  → ZXing base → rettifica cromatica → ZXing secondario
-  → LT peeling → SHA-256 → FILE
+FILE → SHA-256/QCT1 → LT robust-soliton → QR base + C1 [+ C2] → CAMERA
+     → ZXing base → rettifica cromatica → ZXing C1/C2 → LT peeling → SHA-256 → FILE
 ```
 
-### Quattro stati per modulo
-I moduli dati usano quattro colori: due scuri e due chiari. La coppia scuro/chiaro conserva il bit QR standard; la scelta warm/cool aggiunge un secondo bit. Finder, timing, alignment e altri moduli riservati restano nero/bianco puro.
+## Ricezione e diagnostica
 
-Il secondo bit non è un flusso grezzo: ricostruisce un secondo QR standard della stessa versione, ECC e mask. Il ricevitore usa la posizione trovata da ZXing per campionare il colore, ricostruisce la matrice binaria secondaria e la passa di nuovo a ZXing. Anche il canale cromatico beneficia quindi dell'ECC QR.
+La diagnostica separa base, C1 e C2, mostra separazione cromatica, simboli distinti/duplicati, frame saltati e goodput fountain in KiB/s. A completamento viene mostrato anche il goodput effettivo del file. La finalizzazione è atomica: SHA-256, download e log `RX completo` vengono eseguiti una sola volta anche con più worker ancora in volo.
 
-Se il canale colore non è leggibile, il QR base continua a funzionare: il sistema degrada alla velocità della v1.2 invece di perdere l'intero frame.
+## Fountain
 
-### Griglia adattiva
-AUTO sceglie la griglia più densa tra 1, 2, 4 e 6 QR mantenendo circa 150 CSS px per codice. Sei QR diventano 3×2 in orizzontale e 2×3 in verticale. Ogni posizione cambia a fasi sfalsate.
-
-Ogni quadrato porta 2 simboli fountain indipendenti. Con 6 QR a 3 fps/QR il limite teorico passa da 18 a 36 nuovi simboli fountain al secondo quando entrambi i canali vengono decodificati.
-
-### Fountain e perdita di frame
-Il robust-soliton LT è adattato da Decimen Optical Transfer v0.3.0 (MIT). I frame possono arrivare in qualunque ordine; quelli mancanti rallentano soltanto la ricezione e le riletture vengono deduplicate.
-
-### Diagnostica ricevitore
-La UI mostra separatamente:
-- simboli fountain distinti e duplicati;
-- QR base decodificati;
-- QR colore ricostruiti / candidati;
-- separazione cromatica stimata;
-- frame camera e frame saltati;
-- peeling LT e target stimato.
+Il robust-soliton LT è adattato da Decimen Optical Transfer v0.3.0 (MIT), con attribuzione a Evan Crawley / Bash Alarmist. I frame possono mancare, arrivare fuori ordine o essere riletti: la perdita rallenta il trasferimento ma non crea un “frame obbligatorio” mancante.
 
 ## GitHub Pages
+
 `https://alessandrogabe.github.io/qcolortrasfer/`
 
-## Test
-`npm test` e `npm run check` coprono fountain, perdita simulata, frame fuori ordine, duplicati, griglia adattiva e proprietà della palette a 4 stati. Il canale fisico colore richiede comunque prova reale display→camera.
-
 ## Licenza
-qcolortrasfer è MIT. Il fountain robust-soliton è adattato da Decimen Optical Transfer v0.3.0, MIT, Copyright (c) 2026 Evan Crawley (Bash Alarmist). Le release Decimen successive AGPL non vengono incorporate. Vedi `THIRD_PARTY_NOTICES.md`.
+
+qcolortrasfer è MIT. Vedi `THIRD_PARTY_NOTICES.md` per Decimen, qrcode, zxing-wasm e ZXing-C++.
