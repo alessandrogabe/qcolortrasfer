@@ -2,78 +2,104 @@
 
 PWA open source MIT per trasferire file direttamente dallo schermo di un dispositivo alla fotocamera di un altro, senza Wi‑Fi, Bluetooth, account o backend dati.
 
-## v1.6 beta: RX ROI / crop tracking
+## v2 beta: high-throughput QR + colore
 
-La baseline affidabile resta un QR standard letto da ZXing. qcolortrasfer sovrappone informazioni cromatiche ai soli moduli dati/ECC, lasciando finder/timing/alignment e moduli funzione in bianco/nero puro.
-
-Modalità TX disponibili:
-
-- **4 stati / 2 canali STABILE — default:** profilo fisicamente verificato e, nei test reali del progetto, più veloce di ADAPTIVE.
-- **4 stati / 2 canali ADAPTIVE:** stesso encoding ottico, scheduler TX con dwell minimo; resta disponibile come fallback sperimentale per coppie di dispositivi che ne beneficiano.
-- **8 stati / 3 canali EXP:** luminanza + 2 assi cromatici = 3 QR logici nello stesso quadrato; resta sperimentale.
-
-Payload selezionabile: **512 / 768 / 1024 / 1280 byte** per simbolo fountain; default 1024 B. Target TX: **3 / 5 / 8 / 12 / 20 fps per QR**. Griglia: 1 / 2 / 4 / 6 QR.
+La v2 riallinea l'architettura all'obiettivo principale del progetto: partire dal metodo QR/fountain ad alto throughput dimostrato da Decimen e **migliorarlo con un secondo QR logico nella crominanza**.
 
 ```text
-FILE → SHA-256/QCT1 → LT robust-soliton → QR base + C1 [+ C2] → CAMERA
-     → acquisizione full-frame → tracking ROI → crop paralleli
-     → ZXing base + crominanza C1/C2 → LT peeling → SHA-256 → FILE
+FILE
+ ↓
+QCF2 container: nome + SHA-256 + bytes
+ ↓
+LT robust-soliton
+ ↓
+QCT2 compact frame
+ ↓
+┌───────────────────────────────┐
+│ QR fisico                     │
+│  luminanza = QR base          │
+│  crominanza = QR C1           │
+└───────────────────────────────┘
+ × 4/6 codici fisici
+ ↓
+CAMERA 1280@60 target
+ ↓
+full acquisition → ROI/crop → ZXing base → C1 pure decode
+ ↓
+LT peeling → QCF2 → SHA-256 → FILE
 ```
 
-## Perché RX ROI
+### Trasmettitore
 
-La versione precedente passava l'intero frame della fotocamera a ZXing quasi a ogni frame. Con più QR sullo schermo questo spreca gran parte del lavoro su pixel che non appartengono ad alcun codice.
+Il profilo principale è **4 stati / 2 canali HIGH THROUGHPUT**.
 
-La v1.6 separa **acquisizione** e **tracking**:
+- QR standard byte-mode, ECC L, mask 4 fissata.
+- Envelope massimo: **2953 byte per QR**.
+- QCT2 usa un header di **24 byte** + CRC32 di 4 byte.
+- Payload fountain massimo: **2925 byte per canale**.
+- Ogni QR fisico porta quindi fino a **2925 B base + 2925 B colore**.
+- Il file name e SHA-256 non vengono più ripetuti in ogni frame: sono nel container QCF2 protetto dal fountain.
+- I raster QR vengono pre-generati in **2–4 Web Worker**.
+- Lookahead = **3 raster per posizione**.
+- I repaint sono sfalsati via `requestAnimationFrame`: ogni posizione aggiorna alla frequenza richiesta, ma le celle non cambiano tutte nello stesso istante.
+- Target selezionabili: 8 / 12 / **24 default** / 30 / 60 fps per QR.
 
-1. un full scan trova i QR QCT1 e restituisce le loro coordinate;
-2. le coordinate vengono fuse in regioni persistenti con TTL breve;
-3. nei frame successivi il main thread estrae piccoli crop attorno alle regioni note;
-4. ogni regione può essere in-flight su un solo worker, così più worker non decodificano inutilmente lo stesso QR;
-5. i crop vengono distribuiti su **2–4 worker** in base a `navigator.hardwareConcurrency`;
-6. un full scan periodico riacquisisce QR mossi, nascosti o persi;
-7. quando il numero di regioni scende sotto il massimo osservato, il full scan accelera temporaneamente;
-8. i full scan saltano la ricostruzione cromatica per liberare prima il worker; C1/C2 vengono recuperati sui crop, che sono molto più piccoli.
+### AUTO 4/6 QR
 
-Il tracker è una implementazione originale qcolortrasfer/MIT. Le release Decimen >=0.4 sono AGPL: nessun loro sorgente è copiato o adattato. L'idea generale di usare localizzazione + crop è trattata come principio architetturale, non come sorgente.
+AUTO non scende a 2 QR. Sceglie esclusivamente **4 o 6 QR fisici**, come richiesto dal progetto.
 
-## Worker pool e camera
+La scelta usa dimensione viewport, DPR e dimensione reale del raster QR. Se una griglia 2×3 / 3×2 mantiene almeno circa 2,5 device-pixel per cella raster, vengono mostrati 6 QR; altrimenti 4 QR più grandi.
 
-Il pool sceglie automaticamente:
+Le opzioni 1/2 QR restano solo come strumenti manuali di debug.
 
-- 2 worker fino a 5 CPU logiche;
-- 3 worker da 6–7;
-- 4 worker da 8 in su.
+### Ricevitore
 
-La camera prova prima **60 fps exact** con risoluzione ideale 1920×1080, poi ricade a 30 fps exact e infine a 60 fps ideal. Se il browser espone `focusMode=continuous`, viene richiesto il focus continuo. La UI mostra la modalità effettivamente ottenuta.
+La v2 mantiene il tracker ROI introdotto in v1.6 e lo rende più vicino al profilo high-throughput:
 
-## Diagnostica RX
+- camera ideale **1280×960 @ 60 fps exact**, fallback 30 fps;
+- **2–6 worker RX**, usando fino ai core logici disponibili;
+- full scan rapido per acquisizione e recupero;
+- regioni con TTL breve;
+- full scan rallentato quando la griglia è completa e accelerato se manca un QR;
+- crop con padding più largo per assorbire movimento mano/camera;
+- sui crop ZXing disabilita `tryHarder`, rotazioni, inversione e downscale;
+- i full scan possono usare anche le posizioni di rilevamenti non decodificati come regioni probationary, senza lasciare che spostino una ROI già confermata;
+- il layer C1 riusa la geometria ottenuta dal QR base;
+- il QR cromatico sintetico viene passato a ZXing con `isPure=true`, `FixedThreshold` e senza seconda ricerca del finder.
 
-Oltre a base/C1/C2, simboli distinti/duplicati e goodput, la UI mostra:
+## Compatibilità
 
-- `ROI attive / picco`;
-- `crop hit / crop inviati`;
-- numero di full scan;
-- worker occupati / worker totali;
-- frame camera arrivati mentre tutti i worker erano saturi;
-- stato del peeling fountain.
+Il trasmettitore v2 usa QCT2. Il ricevitore continua a leggere **QCT1**, quindi i flussi v1.x non vengono resi illeggibili.
 
-A completamento viene mostrato il goodput effettivo del file. La finalizzazione resta atomica: SHA-256, download e log `RX completo` vengono eseguiti una sola volta.
+QCT2 porta la metadata del file in QCF2, ma il fountain wire model resta lo stesso: simboli indipendenti, fuori ordine, duplicabili e perdibili.
 
-## Fountain
+## Prestazioni
 
-Il robust-soliton LT è adattato da Decimen Optical Transfer v0.3.0 (MIT), con attribuzione a Evan Crawley / Bash Alarmist. I frame possono mancare, arrivare fuori ordine o essere riletti: la perdita rallenta il trasferimento ma non crea un frame obbligatorio mancante.
+Il tetto nominale del profilo default `2925 B × 24 fps × 4 QR × 2 canali` è circa **548 KiB/s fountain**. Con 6 QR supera 820 KiB/s nominali. Sono valori di capacità del trasmettitore, non promesse di goodput: il limite reale è la percentuale di simboli che camera, ZXing, C1 e CPU riescono a recuperare.
+
+Il benchmark da inseguire è il goodput reale `KiB/s file`. Il riferimento pubblico di Decimen v0.4 ha dimostrato circa **199 KB/s phone→phone** con 2 QR B/N; qcolortrasfer mira a raggiungere prima quell'ordine di grandezza e poi superarlo sfruttando C1.
+
+## Licenza e provenienza
+
+qcolortrasfer è MIT.
+
+Il robust-soliton LT è adattato direttamente da **Decimen Optical Transfer v0.3.0 MIT**, con attribuzione. Le release Decimen >=0.4 sono AGPL: il loro codice non viene copiato o adattato nella v2.
+
+Principi architetturali generali osservabili nelle release successive — QR densi, mask fissata, lookahead, repaint sfalsati, ROI/crop e worker pool — sono reimplementati indipendentemente in qcolortrasfer/MIT. Il layer cromatico dual-QR, QCT2/QCF2, il TX raster worker pool e il tracker sono codice qcolortrasfer.
+
+Vedi `THIRD_PARTY_NOTICES.md`.
 
 ## Test
 
-`npm test` / `npm run check` includono i test precedenti e i nuovi test puri del tracker ROI: conversione coordinate ZXing→frame, matching/IoU, padding crop, deduplica regioni, scheduling full-scan acquisition/degraded/locked e dimensionamento 2–4 worker.
+La CI GitHub esegue ad ogni push/PR:
 
-Il canale fisico display→camera richiede comunque una prova reale sui dispositivi: il benchmark importante resta il `KiB/s file` finale.
+```text
+npm test
+npm run check
+```
+
+La suite copre QCT1/QCT2, QCF2, CRC, fountain, palette, AUTO 4/6, lookahead math, worker scaling, ROI, PWA e finalizzazione atomica. La validazione display→camera resta necessariamente fisica.
 
 ## GitHub Pages
 
 `https://alessandrogabe.github.io/qcolortrasfer/`
-
-## Licenza
-
-qcolortrasfer è MIT. Vedi `THIRD_PARTY_NOTICES.md` per Decimen, qrcode, zxing-wasm e ZXing-C++.
