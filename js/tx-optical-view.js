@@ -1,20 +1,23 @@
 // qcolortrasfer TX optical view controller.
 //
-// iPhone/iPad browsers do not reliably expose the Fullscreen API for arbitrary
-// DOM elements. More importantly, element fullscreen still couples the optical
-// stage to the page layout on some WebKit builds. This module therefore treats
-// "QR a tutto schermo" as a dedicated optical VIEW, not as page fullscreen.
+// The normal INVIA screen is configuration only. The QR stage is parked outside
+// the visible page; pressing the normal START button moves it into a dedicated
+// optical view pinned to the iOS *visualViewport* and then app.js starts TX via
+// its existing handler. No second transmission engine is introduced here.
 //
-// The TX shell is temporarily portaled directly under <body>, pinned to the
-// *visible* viewport, and all page pan/overscroll is locked. Only the QR stage
-// and the compact START / STOP / RESET / ESCI bar remain visible. The optical
-// engine itself stays in app.js and is controlled through its existing buttons.
+// iPhone/iPad browsers do not reliably fullscreen arbitrary DOM elements, so
+// this is deliberately an optical VIEW rather than a Fullscreen API feature.
+// Only QR + START / STOP / RESET / ESCI are visible while the view is active.
 
 const root = document.documentElement;
 const body = document.body;
 const shell = document.getElementById('txFullscreenShell');
-const enterButton = document.getElementById('fullTx');
+const startButton = document.getElementById('startTx');
+const legacyEnterButton = document.getElementById('fullTx');
 const exitButton = document.getElementById('fsExitTx');
+const stopButton = document.getElementById('stopTx');
+const fileInput = document.getElementById('fileInput');
+const txStatus = document.getElementById('txStatus');
 
 let active = false;
 let marker = null;
@@ -33,8 +36,8 @@ function visibleViewportSize() {
 function requestTxLayoutRefresh() {
   cancelAnimationFrame(refreshRaf);
   refreshRaf = requestAnimationFrame(() => {
-    // app.js already owns all QR sizing/AUTO 4/6 logic. Reuse that path instead
-    // of duplicating optical-layout code in the presentation module.
+    // app.js owns QR sizing and AUTO 4/6. Reuse its resize path after changing
+    // viewport instead of duplicating optical layout rules in this UI module.
     window.dispatchEvent(new Event('resize'));
   });
 }
@@ -93,30 +96,59 @@ export function exitTxOpticalView() {
   requestTxLayoutRefresh();
 }
 
-function interceptEnter(event) {
-  // app.js still contains the old native-fullscreen fallback for compatibility.
-  // Capture phase prevents that legacy handler from running for this button.
+function hasPreparedFile() {
+  return Boolean(fileInput?.files?.length);
+}
+
+function enterFromMainStart() {
+  // Capture phase runs before app.js' normal START handler. We only prepare the
+  // optical viewport here and intentionally DO NOT stop propagation: app.js then
+  // receives the same click and starts the existing QCT2/fountain scheduler.
+  if (active) return;
+  if (!hasPreparedFile()) {
+    if (txStatus) {
+      txStatus.textContent = 'Seleziona prima un file da trasmettere.';
+      txStatus.dataset.kind = 'warn';
+    }
+    return;
+  }
+  enterTxOpticalView();
+}
+
+function interceptLegacyEnter(event) {
+  // Hidden compatibility control kept because legacy app.js still binds it.
+  // If invoked programmatically, route it to the same optical view and prevent
+  // the old Fullscreen API path from executing.
   event.preventDefault();
   event.stopImmediatePropagation();
-  if (active) exitTxOpticalView();
+  if (!hasPreparedFile()) return;
+  if (active) pauseAndExit();
   else enterTxOpticalView();
+}
+
+function pauseAndExit() {
+  if (!active) return;
+  // Use app.js' public STOP control so TX cannot remain active behind config UI.
+  stopButton?.click();
+  exitTxOpticalView();
 }
 
 function interceptExit(event) {
   event.preventDefault();
   event.stopImmediatePropagation();
-  exitTxOpticalView();
+  pauseAndExit();
 }
 
 function blockPan(event) {
   if (active) event.preventDefault();
 }
 
-enterButton?.addEventListener('click', interceptEnter, { capture: true });
+startButton?.addEventListener('click', enterFromMainStart, { capture: true });
+legacyEnterButton?.addEventListener('click', interceptLegacyEnter, { capture: true });
 exitButton?.addEventListener('click', interceptExit, { capture: true });
 
-// These listeners matter on iOS: overflow:hidden alone does not consistently
-// suppress rubber-band / sideways page movement while a finger is on the view.
+// On iOS overflow:hidden alone does not reliably suppress rubber-band and
+// sideways movement, so block the gestures while optical view is active.
 document.addEventListener('touchmove', blockPan, { passive: false });
 document.addEventListener('gesturestart', blockPan, { passive: false });
 window.addEventListener('wheel', blockPan, { passive: false });
@@ -124,9 +156,7 @@ window.addEventListener('wheel', blockPan, { passive: false });
 window.visualViewport?.addEventListener('resize', syncOpticalViewport);
 window.visualViewport?.addEventListener('scroll', syncOpticalViewport);
 window.addEventListener('orientationchange', syncOpticalViewport);
-window.addEventListener('pagehide', () => { if (active) exitTxOpticalView(); });
+window.addEventListener('pagehide', () => { if (active) pauseAndExit(); });
 document.addEventListener('keydown', event => {
-  if (active && event.key === 'Escape') exitTxOpticalView();
+  if (active && event.key === 'Escape') pauseAndExit();
 });
-
-if (enterButton) enterButton.textContent = 'QR A TUTTO SCHERMO';
