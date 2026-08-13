@@ -1,4 +1,4 @@
-const CACHE = 'qcolortrasfer-v2.1.0-home-launcher';
+const CACHE = 'qcolortrasfer-v2.2.0-mono-fullscreen';
 const CORE = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
