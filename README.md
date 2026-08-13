@@ -46,11 +46,11 @@ Il profilo principale è **4 stati / 2 canali HIGH THROUGHPUT**.
 
 ### AUTO 4/6 QR
 
-AUTO non scende a 2 QR. Sceglie esclusivamente **4 o 6 QR fisici**, come richiesto dal progetto.
+La UI v2 espone soltanto **AUTO 4/6**, **4 QR** e **6 QR**. AUTO non scende a 2 QR.
 
 La scelta usa dimensione viewport, DPR e dimensione reale del raster QR. Se una griglia 2×3 / 3×2 mantiene almeno circa 2,5 device-pixel per cella raster, vengono mostrati 6 QR; altrimenti 4 QR più grandi.
 
-Le opzioni 1/2 QR restano solo come strumenti manuali di debug.
+Le primitive interne per layout più piccoli restano soltanto per retrocompatibilità e test, non come modalità produttiva della v2.
 
 ### Ricevitore
 
