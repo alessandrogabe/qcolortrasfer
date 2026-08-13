@@ -1,37 +1,86 @@
 # qcolortrasfer specification
 
 ## Goal
-Static installable PWA for one-way screen-to-camera file transfer with no mandatory return channel or backend.
+Static installable PWA for one-way screen-to-camera file transfer with no mandatory return channel or backend. Primary direction: reproduce the proven high-throughput QR/fountain architecture independently under MIT and add qcolortrasfer's chromatic second channel.
 
-## v1.6 architecture
-1. File metadata + SHA-256.
-2. LT robust-soliton fountain; payload configurable 512/768/1024/1280 B, default 1024 B.
-3. QCT1 packet + CRC32. 4-state STABILE is the default; 4-state ADAPTIVE shares the same wire format; 8-state is experimental.
-4. Base optical channel: ordinary QR byte-mode, ECC L, pinned mask 4.
-5. Chromatic modulation only on non-reserved QR modules.
-6. Display grid: 1/2/4/6 physical QR tiles with staggered refresh.
-7. Camera target: ideal 1920-wide; first request exact 60 fps, fallback exact 30, then ideal 60.
-8. RX acquisition: occasional full-frame ZXing scan, max 8 base QR. Full-scan color reconstruction is disabled to reduce occupancy.
-9. RX tracking: valid QCT1 detections become short-lived ROIs. Matching uses IoU plus normalized center distance; detections are mildly smoothed.
-10. RX crop scheduling: crop = detected box + bounded padding; one in-flight task max per ROI; oldest-submitted ROI gets priority.
-11. Worker pool: 2/3/4 module workers selected from hardware concurrency. Full-scan task gets priority when due; remaining workers process ROI crops.
-12. Crop decode: ZXing base → local homography → chroma C1/C2 → synthetic QR → ZXing; coordinates returned by a crop are translated back into full-frame coordinates.
-13. Recovery: no ROI = acquisition full scan every ~120 ms; degraded ROI count = ~300 ms; locked set = ~1200 ms. Regions expire after ~1800 ms.
-14. Reconstruction: dedupe, LT peeling, trim, SHA-256.
-15. Finalization guarded by `rxFinalizing/rxComplete`; completion side effects execute once.
+## v2 architecture
+1. Read file and compute SHA-256.
+2. Pack once into QCF2: filename + SHA-256 + raw file bytes.
+3. LT robust-soliton fountain over the complete QCF2 container.
+4. QCT2 frame: 24-byte header + fountain payload + CRC32.
+5. Maximum QCT2 fountain payload = 2925 B so complete QR bytes = 2953 B.
+6. Base optical channel: ordinary byte-mode QR, ECC L, fixed mask 4.
+7. 4-state default: base QR bit in luminance + independent C1 QR bit in chroma.
+8. Reserved/function modules remain pure B/W and must match between logical QR layers.
+9. AUTO display grid chooses 4 or 6 physical codes only; manual 1/2 remain debug overrides.
+10. AUTO 6 criterion uses viewport, DPR and actual raster size; six codes require >=2.5 device pixels per raster cell.
+11. Default TX target = 24 fps/physical QR; selectable 8/12/24/30/60.
+12. Non-adaptive TX raster generation is moved to 2–4 workers, with lookahead target = 3 raster frames per visible slot.
+13. Painting uses requestAnimationFrame and staggered phases; a long rAF stall resets cadence rather than replaying invisible backlog.
+14. Camera target = 1280-wide, exact 60 fps first, exact 30 fallback, then ideal 60.
+15. RX pool = 2–6 workers, bounded by logical hardware concurrency.
+16. Full-frame ZXing is acquisition/recovery. Crop decode is the hot path.
+17. Crop ZXing disables tryHarder/rotation/inversion/downscale and searches one QR.
+18. Full scan returns both decoded detections and plausible position-only sightings; unconfirmed sightings are probationary and cannot move a confirmed ROI.
+19. ROI TTL = 1600 ms; full scan cadence ~100 ms acquisition, 250 ms degraded, 1500 ms locked.
+20. Crop padding = 30% of detected QR side, clamped to frame boundaries.
+21. C1 reuses base-QR geometry. Reconstructed C1 is rendered as a clean QR and decoded with ZXing `isPure=true`, fixed threshold, no second finder search.
+22. Dedupe + LT peeling reconstruct QCF2; unpack QCF2; verify raw-file SHA-256; expose one download.
+23. Finalization remains guarded by `rxFinalizing/rxComplete`.
 
-## ROI invariants
-- Only valid QCT1 QR results create/update regions.
-- ROI state is performance-only; loss of all ROI cannot make a transfer permanently fail because full-frame acquisition continues.
-- A worker cannot hold the same `regionId` concurrently with another worker.
-- Crop origin is part of the worker task; detected crop coordinates are translated back to camera-frame coordinates before tracker update.
-- Full scan remains authoritative for reacquisition; ROI is not a replacement for ZXing localization.
+## QCT2 frame layout
+Little-endian/DataView numeric fields as implemented by JavaScript DataView defaults used consistently within qcolortrasfer:
 
-## Performance telemetry
-TX shows optical settings and theoretical fountain rate. RX shows base/C1/C2, unique/duplicate fountain symbols, live goodput, ROI active/peak, crop hit rate, full-scan count, busy/total workers, saturated camera frames and peeling state. Completion reports elapsed seconds and effective file KiB/s.
+```text
+0   u32 magic "QCT2"
+4   u8  version = 2
+5   u8  flags (bit0 = 8-state experimental)
+6   u16 headerBytes = 24
+8   u32 streamId
+12  u32 symbolId
+16  u16 sourceCount
+18  u16 chunkSize
+20  u32 containerLength
+24  chunkSize bytes fountain payload
+... u32 CRC32 over header + payload
+```
 
-## Licensing boundary
-The ROI/crop scheduler is original qcolortrasfer MIT code. Decimen v0.3.0 MIT remains the source for the adapted fountain and baseline QR/worker approach. Decimen >=0.4 AGPL may be referenced only for public benchmark/architectural comparison; no AGPL source is copied or adapted into qcolortrasfer.
+`sourceCount == ceil(containerLength/chunkSize)` is mandatory. QCT2 sourceCount is u16; UI must reject a payload/file combination that exceeds it.
+
+## QCF2 container
+
+```text
+0   u32 magic "QCF2"
+4   u8  version = 1
+5   u8  flags (bit0 = SHA present)
+6   u16 total header bytes
+8   u32 raw file length
+12  u16 UTF-8 filename length
+14  u16 reserved = 0
+16  32 bytes SHA-256
+48  filename bytes
+... raw file bytes
+```
+
+Metadata is fountain-protected once rather than repeated in every optical frame.
 
 ## Compatibility
-QCT1 and fountain wire behavior are unchanged by RX ROI. Existing 4-state streams remain compatible. RX ROI is a receiver-side performance optimization only.
+- TX v2 emits QCT2.
+- RX v2 decodes QCT2 and legacy QCT1.
+- QCT1 remains unchanged.
+- 4-state chromatic semantics remain unchanged.
+- 8-state remains experimental and is not the performance baseline.
+
+## Performance contracts
+- UI must show QR version, payload, visible physical QR count, requested fps, theoretical fountain KiB/s, generated logical symbols/s, raster generation EMA, lookahead occupancy and queue misses.
+- RX must show base/C1/C2 counts, unique/duplicate fountain symbols, live fountain KiB/s, active/peak ROI, crop hit ratio, full scans, worker occupancy, saturated captures and peeling state.
+- Completion must report raw-file elapsed time and effective file KiB/s.
+- Theoretical TX capacity is not presented as measured goodput.
+
+## Licensing boundary
+- Decimen Optical Transfer v0.3.0 MIT is directly attributable source for the robust-soliton adaptation and baseline QR/fountain approach.
+- Decimen >=0.4 is AGPL. Its public benchmark results and general architectural ideas may be studied, but its source is not copied/adapted into qcolortrasfer MIT.
+- V2 high-throughput scheduler, QCT2/QCF2, raster-worker pool, AUTO 4/6 policy, ROI tracker and chromatic layer are qcolortrasfer implementations.
+
+## Test contract
+CI runs `npm test` and `npm run check` for every push/PR. Tests must pin QCT1 compatibility, QCT2/QCF2 validation, CRC, fountain correctness, 2953-byte envelope, AUTO 4/6 decisions, stagger timing math, TX/RX worker bounds, ROI behavior, fast ZXing wiring, PWA cache and atomic finalization.
