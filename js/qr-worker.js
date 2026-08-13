@@ -1,5 +1,11 @@
 // Portable multi-QR + chromatic decoder worker.
-// Base: ordinary QR decoded from camera by ZXing-WASM.
+//
+// RX v1.6 adds two task modes without changing the optical protocol:
+// - full: locate up to 8 base QR on the whole camera frame; color decoding is
+//   normally skipped because this task exists mainly to acquire/reacquire ROIs.
+// - crop: decode one small tracked region; color reconstruction is enabled, so
+//   most CPU time is spent where a QR is already known to be.
+//
 // 4-state: one chroma axis reconstructs a second standard QR.
 // 8-state: two independent chroma axes reconstruct second + third standard QR.
 // Every recovered chroma matrix is passed through ZXing again, retaining QR ECC.
@@ -8,11 +14,13 @@ import {
   chromaScoreA, chromaScoreB, clusterColorScores, classifyColorScore
 } from './color-code.js';
 import { FLAG_COLOR_8 } from './protocol.js';
+import { detectionBoxFromPosition } from './rx-roi.js';
 
 const ZXING_MODULE_URL = 'https://esm.sh/zxing-wasm@2.0.0/reader?bundle';
 const ZXING_WASM_URL = 'https://cdn.jsdelivr.net/npm/zxing-wasm@2.0.0/dist/reader/zxing_reader.wasm';
 const QR_MODULE_URL = 'https://esm.sh/qrcode@1.5.4?bundle';
-const MAX_SYMBOLS = 8;
+const MAX_FULL_SYMBOLS = 8;
+const MAX_CROP_SYMBOLS = 2;
 const QR_ECC = 'L';
 const QR_MASK = 4;
 const SYNTH_MARGIN = 4;
@@ -135,6 +143,11 @@ function moduleColorScores(image, h, gx, gy) {
   return [sumA / offsets.length, sumB / offsets.length];
 }
 
+function resultDetection(result, originX = 0, originY = 0) {
+  const box = detectionBoxFromPosition(result?.position, originX, originY);
+  return box ? { ...box, version: versionOf(result) } : null;
+}
+
 async function reconstructChroma(result, image) {
   if (!isQct1(result.bytes)) return null;
   const version = versionOf(result);
@@ -200,30 +213,40 @@ async function decodeSynthetic(reader, matrices) {
 }
 
 self.onmessage = async event => {
-  const { id, buf, w, h } = event.data;
+  const {
+    id, buf, w, h,
+    mode = 'full', regionId = null, originX = 0, originY = 0,
+    decodeColor = mode === 'crop'
+  } = event.data || {};
   try {
     const reader = await getReader();
     const image = new ImageData(new Uint8ClampedArray(buf), w, h);
-    const results = await reader.readBarcodes(image, { formats: ['QRCode'], maxNumberOfSymbols: MAX_SYMBOLS });
+    const maxNumberOfSymbols = mode === 'crop' ? MAX_CROP_SYMBOLS : MAX_FULL_SYMBOLS;
+    const results = await reader.readBarcodes(image, { formats: ['QRCode'], maxNumberOfSymbols });
     const base = results.filter(item => item.isValid && item.bytes?.length > 0 && isQct1(item.bytes));
     const symbols = base.map(item => item.bytes);
+    const detections = base.map(item => resultDetection(item, originX, originY)).filter(Boolean);
 
     const matricesA = [], matricesB = [];
     let sepA = 0, sepB = 0, eightBase = 0;
-    for (const result of base) {
-      const reconstructed = await reconstructChroma(result, image);
-      if (!reconstructed) continue;
-      if (reconstructed.eight) eightBase++;
-      if (reconstructed.a) { matricesA.push(reconstructed.a); sepA += reconstructed.a.separation; }
-      if (reconstructed.b) { matricesB.push(reconstructed.b); sepB += reconstructed.b.separation; }
+    if (decodeColor) {
+      for (const result of base) {
+        const reconstructed = await reconstructChroma(result, image);
+        if (!reconstructed) continue;
+        if (reconstructed.eight) eightBase++;
+        if (reconstructed.a) { matricesA.push(reconstructed.a); sepA += reconstructed.a.separation; }
+        if (reconstructed.b) { matricesB.push(reconstructed.b); sepB += reconstructed.b.separation; }
+      }
+    } else {
+      eightBase = base.reduce((count, item) => count + (usesEightStates(item.bytes) ? 1 : 0), 0);
     }
 
-    const colorA = await decodeSynthetic(reader, matricesA);
-    const colorB = await decodeSynthetic(reader, matricesB);
+    const colorA = decodeColor ? await decodeSynthetic(reader, matricesA) : [];
+    const colorB = decodeColor ? await decodeSynthetic(reader, matricesB) : [];
     symbols.push(...colorA, ...colorB);
 
     self.postMessage({
-      id, symbols,
+      id, mode, regionId, detections, symbols,
       baseCount: base.length,
       eightBase,
       color1Candidates: matricesA.length,
@@ -235,10 +258,15 @@ self.onmessage = async event => {
       error: null
     });
   } catch (error) {
-    self.postMessage({ id, symbols: [], baseCount: 0, eightBase: 0, color1Candidates: 0, color1Count: 0, color1Separation: 0, color2Candidates: 0, color2Count: 0, color2Separation: 0, error: error?.message || String(error) });
+    self.postMessage({
+      id, mode, regionId, detections: [], symbols: [], baseCount: 0, eightBase: 0,
+      color1Candidates: 0, color1Count: 0, color1Separation: 0,
+      color2Candidates: 0, color2Count: 0, color2Separation: 0,
+      error: error?.message || String(error)
+    });
   }
 };
 
 void Promise.all([getReader(), getQrCode()])
-  .then(() => self.postMessage({ id: -1, ready: true, symbols: [], error: null }))
-  .catch(error => self.postMessage({ id: -1, ready: false, symbols: [], error: error?.message || String(error) }));
+  .then(() => self.postMessage({ id: -1, ready: true, symbols: [], detections: [], error: null }))
+  .catch(error => self.postMessage({ id: -1, ready: false, symbols: [], detections: [], error: error?.message || String(error) }));
