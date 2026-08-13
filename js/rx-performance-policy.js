@@ -41,6 +41,7 @@ export function upgradeVideoConstraints(constraints) {
 }
 
 function installCameraUpgrade() {
+  if (typeof navigator === 'undefined') return;
   const media = navigator.mediaDevices;
   if (!media?.getUserMedia || media.__qcolorPerformanceWrapped) return;
   const original = media.getUserMedia.bind(media);
@@ -57,6 +58,7 @@ function installCameraUpgrade() {
 }
 
 function armRxPerformancePolicy() {
+  if (typeof navigator === 'undefined') return;
   const target = desiredRxWorkerTarget(navigator.hardwareConcurrency);
   globalThis.__QCOLOR_RX_WORKER_TARGET = target;
   // Keep full-frame acquisition warm for the first ~2.8 s after initial lock so
@@ -72,6 +74,7 @@ function armRxPerformancePolicy() {
 }
 
 function updateRuntimeLabels() {
+  if (typeof document === 'undefined') return;
   const capacity = document.getElementById('capacity');
   if (capacity) capacity.textContent = capacity.textContent.replace('RX 1280@60 / 2–6 worker', 'RX 1920 target / pool fino a 6 worker');
   const rxNote = document.querySelector('#rxView .note');
@@ -79,5 +82,5 @@ function updateRuntimeLabels() {
 }
 
 installCameraUpgrade();
-document.getElementById('startRx')?.addEventListener('click', armRxPerformancePolicy, { capture: true });
-window.addEventListener('load', updateRuntimeLabels, { once: true });
+if (typeof document !== 'undefined') document.getElementById('startRx')?.addEventListener('click', armRxPerformancePolicy, { capture: true });
+if (typeof window !== 'undefined') window.addEventListener('load', updateRuntimeLabels, { once: true });
