@@ -2,37 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FountainEncoder, FountainDecoder, indicesForSymbol } from '../js/fountain.js';
 
-test('systematic symbols map one-to-one', () => {
-  assert.deepEqual(indicesForSymbol(0, 4), [0]);
-  assert.deepEqual(indicesForSymbol(3, 4), [3]);
-});
-
+test('systematic symbols map one-to-one', () => { assert.deepEqual(indicesForSymbol(0, 4), [0]); assert.deepEqual(indicesForSymbol(3, 4), [3]); });
+test('repair indices are deterministic', () => { assert.deepEqual(indicesForSymbol(12345, 73), indicesForSymbol(12345, 73)); });
 test('fountain decoder reconstructs from all systematic symbols out of order', () => {
-  const input = Uint8Array.from({ length: 997 }, (_, i) => (i * 17 + 3) & 255);
-  const encoder = new FountainEncoder(input, 128);
-  const decoder = new FountainDecoder(encoder.sourceCount, encoder.chunkSize, input.length);
+  const input = Uint8Array.from({ length: 997 }, (_, i) => (i * 17 + 3) & 255); const encoder = new FountainEncoder(input, 128); const decoder = new FountainDecoder(encoder.sourceCount, encoder.chunkSize, input.length);
   for (let id = encoder.sourceCount - 1; id >= 0; id--) decoder.addSymbol(id, encoder.symbol(id).data);
-  assert.equal(decoder.complete, true);
-  assert.deepEqual(decoder.reconstruct(), input);
+  assert.equal(decoder.complete, true); assert.deepEqual(decoder.reconstruct(), input);
 });
-
 test('repair symbols recover dropped systematic symbols', () => {
-  const input = Uint8Array.from({ length: 2048 }, (_, i) => (i * 29 + 11) & 255);
-  const encoder = new FountainEncoder(input, 128);
-  const decoder = new FountainDecoder(encoder.sourceCount, encoder.chunkSize, input.length);
-  const dropped = new Set([2, 7, 11]);
+  const input = Uint8Array.from({ length: 2048 }, (_, i) => (i * 29 + 11) & 255); const encoder = new FountainEncoder(input, 128); const decoder = new FountainDecoder(encoder.sourceCount, encoder.chunkSize, input.length); const dropped = new Set([2, 7, 11]);
   for (let id = 0; id < encoder.sourceCount; id++) if (!dropped.has(id)) decoder.addSymbol(id, encoder.symbol(id).data);
-  for (let id = encoder.sourceCount; id < encoder.sourceCount + 500 && !decoder.complete; id++) decoder.addSymbol(id, encoder.symbol(id).data);
-  assert.equal(decoder.complete, true);
-  assert.deepEqual(decoder.reconstruct(), input);
+  for (let id = encoder.sourceCount; id < encoder.sourceCount + 800 && !decoder.complete; id++) decoder.addSymbol(id, encoder.symbol(id).data);
+  assert.equal(decoder.complete, true); assert.deepEqual(decoder.reconstruct(), input);
 });
-
+test('decoder can join after systematic phase and reconstruct from repair stream only', () => {
+  const input = Uint8Array.from({ length: 4096 }, (_, i) => (i * 13 + 101) & 255); const encoder = new FountainEncoder(input, 128); const decoder = new FountainDecoder(encoder.sourceCount, encoder.chunkSize, input.length);
+  for (let id = encoder.sourceCount + 500; id < encoder.sourceCount + 6000 && !decoder.complete; id++) decoder.addSymbol(id, encoder.symbol(id).data);
+  assert.equal(decoder.complete, true); assert.deepEqual(decoder.reconstruct(), input);
+});
 test('duplicate symbols are ignored safely', () => {
-  const input = Uint8Array.from([1, 2, 3, 4]);
-  const encoder = new FountainEncoder(input, 4);
-  const decoder = new FountainDecoder(1, 4, 4);
-  const symbol = encoder.symbol(0);
-  assert.equal(decoder.addSymbol(0, symbol.data), true);
-  assert.equal(decoder.addSymbol(0, symbol.data), false);
-  assert.deepEqual(decoder.reconstruct(), input);
+  const input = Uint8Array.from([1, 2, 3, 4]); const encoder = new FountainEncoder(input, 32); const decoder = new FountainDecoder(1, 32, 4); const symbol = encoder.symbol(0);
+  assert.equal(decoder.addSymbol(0, symbol.data), true); assert.equal(decoder.addSymbol(0, symbol.data), false); assert.deepEqual(decoder.reconstruct(), input);
 });

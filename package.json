@@ -1,9 +1,10 @@
 {
   "name": "qcolortrasfer",
-  "version": "0.1.0",
+  "version": "1.0.0-beta.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check js/app.js && node --check js/fountain.js && node --check js/protocol.js && node --check js/optical.js && node --check sw.js && node --test tests/*.test.mjs"
   }
 }
