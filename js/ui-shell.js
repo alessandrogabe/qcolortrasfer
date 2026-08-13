@@ -6,6 +6,7 @@
 // and independent from the presentation layer.
 
 import './tx-optical-view.js';
+import './tx-flow-ui.js';
 
 const homeView = document.getElementById('homeView');
 const workspaceView = document.getElementById('workspaceView');
