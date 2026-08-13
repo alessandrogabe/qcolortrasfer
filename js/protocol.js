@@ -3,6 +3,7 @@ export const MAGIC = 0x51435431;
 export const VERSION = 1;
 export const HEADER_BYTES = 96;
 export const FLAG_SHA256 = 1;
+export const FLAG_COLOR_8 = 2;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 function writeU64(view, offset, value) {
@@ -36,7 +37,8 @@ export function encodeOpticalPacket(meta, symbolId, payload) {
   if (payload.length > 65535) throw new Error('Payload too large');
   const out = new Uint8Array(HEADER_BYTES + payload.length + 4);
   const view = new DataView(out.buffer);
-  view.setUint32(0, MAGIC); view.setUint8(4, VERSION); view.setUint8(5, meta.sha256 ? FLAG_SHA256 : 0); view.setUint16(6, HEADER_BYTES);
+  const flags = (meta.sha256 ? FLAG_SHA256 : 0) | (meta.visualStates === 8 ? FLAG_COLOR_8 : 0);
+  view.setUint32(0, MAGIC); view.setUint8(4, VERSION); view.setUint8(5, flags); view.setUint16(6, HEADER_BYTES);
   view.setUint32(8, meta.streamId >>> 0); view.setUint32(12, symbolId >>> 0); view.setUint32(16, meta.sourceCount >>> 0); view.setUint16(20, meta.chunkSize); view.setUint16(22, payload.length);
   writeU64(view, 24, meta.fileLength);
   const nameBytes = utf8Prefix(meta.fileName || 'file.bin', 27);
@@ -63,5 +65,10 @@ export function decodeOpticalPacket(bytes) {
   if (sourceCount !== Math.max(1, Math.ceil(fileLength / chunkSize))) throw new Error('Inconsistent source count');
   const nameLength = Math.min(view.getUint8(32), 27);
   const fileName = decoder.decode(bytes.subarray(33, 33 + nameLength)) || 'file.bin';
-  return { streamId: view.getUint32(8), symbolId: view.getUint32(12), sourceCount, chunkSize, fileLength, fileName, sha256: (flags & FLAG_SHA256) ? bytesToHex(bytes.subarray(60, 92)) : null, payload: bytes.slice(HEADER_BYTES, end) };
+  return {
+    streamId: view.getUint32(8), symbolId: view.getUint32(12), sourceCount, chunkSize, fileLength, fileName,
+    sha256: (flags & FLAG_SHA256) ? bytesToHex(bytes.subarray(60, 92)) : null,
+    visualStates: (flags & FLAG_COLOR_8) ? 8 : 4,
+    payload: bytes.slice(HEADER_BYTES, end)
+  };
 }
