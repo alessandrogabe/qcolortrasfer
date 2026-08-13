@@ -1,4 +1,4 @@
-# v2.2 — B/N baseline + TX fullscreen
+# v2.2 / v2.2.1 — B/N baseline + TX optical view
 
 ## B/N baseline
 
@@ -8,8 +8,19 @@ This is the A/B reference for measuring the benefit and cost of qcolor. Compare 
 
 At 2925 B and 24 fps, nominal TX capacity is about 274 KiB/s with 4 B/N QR and 411 KiB/s with 6 B/N QR. The 4-state two-channel profile has twice that nominal offered capacity. These are not measured goodput values; use the final `KiB/s file` result.
 
-## TX fullscreen
+## v2.2.1 TX optical view
 
-Fullscreen targets `txFullscreenShell`, which contains only the barcode stage and a compact bottom control strip. The controls are ordered START, STOP, RESET, EXIT, with START anchored on the left. The fullscreen/immersive layout uses the complete viewport, hides overflow and page panning, and gives the QR stage all available room except the small control strip. AUTO recalculates 4/6 QR after the viewport changes.
+The first v2.2 fullscreen implementation still depended on element fullscreen / a fixed fallback inside the page layout. On iPhone this could leave the document wider than the visible viewport and allow sideways dragging.
 
-If the native Fullscreen API is unavailable, the UI uses an equivalent fixed immersive fallback. RESET rebuilds the selected file stream and resumes automatically when TX was running.
+v2.2.1 replaces the mobile behavior with a dedicated optical view in `js/tx-optical-view.js`:
+
+- pressing `QR A TUTTO SCHERMO` portals `txFullscreenShell` directly under `<body>`;
+- the shell is pinned to `window.visualViewport`, not to the panel/document width;
+- only the barcode stage and the compact START / STOP / RESET / ESCI strip are visible;
+- the document is locked against horizontal/vertical pan, overscroll, rubber-band and gesture movement while the optical view is active;
+- visual viewport resize/orientation changes reuse the existing TX resize path, so AUTO 4/6 and QR scaling are recalculated;
+- exiting restores the shell to its original place and restores the previous scroll position.
+
+The normal workspace is also width-clamped: the long capacity badge can wrap, controls have `min-width:0/max-width:100%`, and the document cannot create horizontal overflow. The optical engine/protocol is unchanged by this UI fix.
+
+Native element Fullscreen remains only as legacy/desktop compatibility code in `app.js`; the iOS optical-view button intercepts that old handler in capture phase and does not depend on it.
