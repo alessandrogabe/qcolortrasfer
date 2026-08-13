@@ -1,7 +1,7 @@
-// qcolortrasfer v2 high-throughput policy.
+// qcolortrasfer v2/v2.3 high-throughput policy.
 //
 // This module contains only original qcolortrasfer/MIT scheduling/math. The
-// architecture deliberately follows the proven optical-transfer principles:
+// architecture deliberately follows proven optical-transfer principles:
 // dense ordinary QR, fixed geometry, lookahead, staggered cell flips and a
 // receiver that is allowed to miss symbols because the fountain code repairs
 // erasures. No Decimen >=0.4 source is incorporated here.
@@ -14,7 +14,13 @@ export const MAX_HIGH_THROUGHPUT_CHUNK = QR_MAX_PACKET_BYTES - QCT2_HEADER_BYTES
 export const TX_LOOKAHEAD_PER_SLOT = 3;
 export const TX_MIN_AUTO_CODES = 4;
 export const TX_MAX_AUTO_CODES = 6;
-export const TX_MIN_DEVICE_PX_PER_CELL = 2.5;
+
+// AUTO is based on the physical pixels available to each QR raster cell. B/N
+// tolerates a little less sampling density; chromatic modes need more pixels so
+// that demosaicing/display sub-pixels do not collapse the chroma classification.
+export const TX_MIN_DEVICE_PX_MONO = 3.2;
+export const TX_MIN_DEVICE_PX_COLOR = 3.8;
+export const TX_MAX_EFFECTIVE_DPR = 4;
 
 export function txWorkerCountForHardware(hardwareConcurrency) {
   const hc = Math.max(1, Math.floor(Number(hardwareConcurrency) || 4));
@@ -28,19 +34,37 @@ export function gridDims46(count, width = 1, height = 1) {
   throw new Error(`Unsupported high-throughput grid: ${count}`);
 }
 
+export function effectiveDisplayDpr(requestedDpr = 1) {
+  const requested = Math.max(1, Number(requestedDpr) || 1);
+  const actual = Math.max(1, Number(globalThis.devicePixelRatio) || 1);
+  return Math.min(TX_MAX_EFFECTIVE_DPR, Math.max(requested, actual));
+}
+
+export function minDevicePxForVisualStates(visualStates = 2) {
+  return Number(visualStates) === 2 ? TX_MIN_DEVICE_PX_MONO : TX_MIN_DEVICE_PX_COLOR;
+}
+
+function inferredVisualStates() {
+  const mode = globalThis.document?.getElementById?.('colorMode')?.value;
+  return mode === 'bw' ? 2 : mode === '8' ? 8 : 4;
+}
+
 export function devicePixelsPerRasterCell(count, widthCss, heightCss, dpr, rasterSize) {
   const { cols, rows } = gridDims46(count, widthCss, heightCss);
   const sideCss = Math.min(widthCss / cols, heightCss / rows);
-  return (sideCss * Math.max(1, Number(dpr) || 1)) / Math.max(1, rasterSize);
+  return (sideCss * effectiveDisplayDpr(dpr)) / Math.max(1, rasterSize);
 }
 
-// Production AUTO is intentionally 4-or-6 only. Six is selected only when it
-// does not make each QR optically too small; otherwise four larger QRs win.
-// Lower-count grid primitives live in optical.js solely for legacy/internal
-// compatibility tests and are not exposed by the v2 production UI.
-export function chooseHighThroughputGrid(widthCss, heightCss, dpr, rasterSize, minPx = TX_MIN_DEVICE_PX_PER_CELL) {
+// Production AUTO is intentionally 4-or-6 only. Six is selected only when a
+// physical V40 raster cell remains large enough for the active optical profile;
+// otherwise four larger QR win. `minPx` can be pinned by tests/experiments. In
+// the browser, when omitted, it follows the selected B/N or chromatic profile.
+export function chooseHighThroughputGrid(widthCss, heightCss, dpr, rasterSize, minPx = null) {
+  const threshold = Number.isFinite(Number(minPx))
+    ? Number(minPx)
+    : minDevicePxForVisualStates(inferredVisualStates());
   const sixPx = devicePixelsPerRasterCell(6, widthCss, heightCss, dpr, rasterSize);
-  return sixPx >= minPx ? 6 : 4;
+  return sixPx >= threshold ? 6 : 4;
 }
 
 export function staggerSubIntervalMs(fpsPerCode, codeCount) {
