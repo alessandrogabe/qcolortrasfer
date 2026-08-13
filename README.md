@@ -1,67 +1,59 @@
 # qcolortrasfer
 
-**PWA open source per trasferire file direttamente da uno schermo alla fotocamera di un altro dispositivo.**
+**PWA open source per trasferire file da uno schermo alla fotocamera di un altro dispositivo, senza backend.**
 
-qcolortrasfer non usa Wi-Fi, Bluetooth, account, pairing o backend per i dati del file. Il trasmettitore converte il file in una sequenza potenzialmente illimitata di frame ottici a quattro colori; il ricevitore usa una fotocamera, scarta le letture corrotte con CRC32 e ricostruisce i blocchi mancanti tramite un fountain code LT-style originale.
+## Stato attuale: baseline QR affidabile
 
-> Stato: beta sperimentale. La pipeline software è testata automaticamente; il canale fisico display→camera dipende da fotocamera, display, distanza, messa a fuoco e illuminazione. Non usare qcolortrasfer come unica copia di dati importanti.
+La prima matrice colore custom è stata rimossa dalla pipeline di riferimento perché i test reali su più dispositivi non producevano frame validi. La baseline attuale adotta deliberatamente l'approccio collaudato di **Decimen Optical Transfer v0.3.0 (MIT)** per il livello ottico:
 
-## Web app / PWA
+- QR standard bianco/nero con quiet zone;
+- ECC QR livello L;
+- acquisizione dell'intero fotogramma camera;
+- decodifica QR con **ZXing-C++ via zxing-wasm**;
+- due Web Worker paralleli;
+- se i worker sono occupati il frame viene perso senza ritrasmissione;
+- il fountain code assorbe le perdite.
 
-Il progetto è completamente statico ed è progettato per GitHub Pages.
-
-Dopo aver abilitato **Settings → Pages → Deploy from a branch → `main` / `(root)`**, l'URL standard del repository è:
-
-`https://alessandrogabe.github.io/qcolortrasfer/`
-
-GitHub Pages serve i siti `github.io` via HTTPS, requisito necessario per l'accesso alla fotocamera e per il service worker.
-
-La PWA include manifest installabile, icone 192×192/512×512/Apple Touch, cache offline, nessuna dipendenza JavaScript esterna, nessun upload dei file, Content Security Policy, modalità standalone, schermo intero trasmettitore, wake lock quando supportato e autotest encode→render→decode nel browser.
-
-## Protocollo v1
+qcolortrasfer mantiene invece i propri layer `QCT1`, CRC32, SHA-256 e fountain LT-style sperimentale.
 
 ```text
 FILE
-  ↓
-SHA-256 + metadati
-  ↓
-chunk sorgente da 320 byte
-  ↓
-fountain encoder LT-style
-  ├─ simboli sistematici
-  └─ simboli repair deterministici e illimitati
-  ↓
-header QCT1 + payload + CRC32
-  ↓
-matrice 48×48 · 4 colori = 2 bit/cella
-  ↓
-DISPLAY → CAMERA
-  ↓
-calibrazione colore per-frame → CRC32 → fountain peeling decoder
-  ↓
-SHA-256 finale → DOWNLOAD
+  -> SHA-256
+  -> chunk 320 B
+  -> fountain symbols
+  -> QCT1 + CRC32
+  -> QR standard ECC L
+  -> DISPLAY
+  -> CAMERA full-frame
+  -> ZXing-WASM workers
+  -> QCT1 / CRC32
+  -> fountain decoder
+  -> SHA-256
+  -> FILE
 ```
 
-Il decoder riduce ogni frame camera a 240×240 e usa una singola operazione `getImageData()`. I quattro riferimenti colore sono nello stesso frame dei dati.
+## Perché questa baseline
 
-## Prima prova consigliata
+Decimen v0.3.0 usa `qrcode` per generare QR standard e `zxing-wasm`/ZXing-C++ per decodificarli nei worker. In questo modo localizzazione, prospettiva, finder, timing pattern ed error correction sono gestiti da una libreria QR matura anziché da un decoder geometrico custom.
 
-1. Apri qcolortrasfer su due dispositivi.
-2. Scegli un file piccolo, ad esempio 10–100 KiB.
-3. Imposta 5 o 8 fps e premi **START**.
-4. Sul ricevitore premi **CAMERA START**.
-5. Inquadra quasi frontalmente e regola **Area codice** finché il bordo coincide con la guida.
-6. Al 100% qcolortrasfer verifica SHA-256 e abilita il download.
+Il colore verrà reintrodotto solo dopo aver misurato una baseline stabile su telefoni reali. L'obiettivo del progetto resta sperimentare un canale ottico multi-stato più veloce, ma senza reinventare le parti che il QR standard risolve già bene.
 
-Se il ricevitore parte tardi, i repair symbols possono comunque ricostruire il file; **RIPARTI** riporta il trasmettitore ai simboli sistematici iniziali.
+## Web app / PWA
 
-## Sviluppo locale
+URL GitHub Pages:
 
-```bash
-python -m http.server 8080
-```
+`https://alessandrogabe.github.io/qcolortrasfer/`
 
-Poi apri `http://localhost:8080`.
+La web app non invia il contenuto del file a server. Per caricare il motore QR al primo utilizzo usa dipendenze statiche pubbliche (`esm.sh` e `jsDelivr`); il service worker prova a conservarle in cache per gli usi successivi.
+
+## Prima prova
+
+1. Apri la PWA su due dispositivi.
+2. Sul trasmettitore scegli un file piccolo (10-100 KiB).
+3. Parti da **3 fps**.
+4. Sul ricevitore premi **CAMERA START** e inquadra il QR: non serve una guida di allineamento precisa.
+5. La diagnostica distingue frame camera, QR realmente decodificati, pacchetti QCT1 rifiutati e simboli fountain utili.
+6. A ricostruzione completata viene verificato SHA-256 prima di abilitare il download.
 
 ## Test
 
@@ -70,19 +62,8 @@ npm test
 npm run check
 ```
 
-I test coprono fountain reconstruction, perdite, join tardivo, duplicati, determinismo, packet round-trip, CRC e struttura PWA.
+## Licenza e provenienza
 
-## Architettura
+Il codice qcolortrasfer è MIT. La baseline ottica è ispirata/adattata dall'architettura di **Decimen Optical Transfer v0.3.0**, anch'essa MIT. Non viene incorporato codice delle versioni Decimen >= v0.4.0 (AGPL).
 
-- `js/fountain.js` — fountain encoder/decoder;
-- `js/protocol.js` — packet QCT1 e integrità;
-- `js/optical.js` — layout e modulazione ottica;
-- `js/app.js` — UI, fotocamera e PWA runtime.
-
-## Roadmap tecnica
-
-Correzione prospettica/finder automatica, ECC locale, confronto 2/4/8 colori, colore+simbolo, più fountain symbols per frame, benchmark BER/fps/throughput ed eventuale Wirehair BSD-3-Clause via WASM.
-
-## Licenza e attribuzioni
-
-qcolortrasfer è MIT. Vedi [LICENSE](LICENSE) e [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Il progetto riconosce esplicitamente **Decimen Optical Transfer**, **libcimbar** e **Wirehair**; la baseline non incorpora sorgente AGPL di Decimen, MPL di libcimbar o Wirehair.
+Le dipendenze runtime sono permissive ma non tutte MIT: `qrcode` è MIT; `zxing-wasm` è MIT e incorpora ZXing-C++ sotto Apache-2.0. Vedi `THIRD_PARTY_NOTICES.md`.
