@@ -11,7 +11,11 @@ import {
 // own compact header inside this limit, leaving 2925 fountain bytes per layer.
 export const CAPACITY_BYTES = 2953;
 export const QR_ECC = 'L';
-export const QR_MARGIN = 4;
+// Two quiet modules are baked into each tile. Two adjacent tiles therefore
+// share a four-module white separator (2 + 2), while the optical stage adds a
+// larger external safe margin. This avoids wasting eight modules between every
+// pair of QR codes while preserving a clean four-module physical gap.
+export const QR_MARGIN = 2;
 export const QR_MASK = 4;
 export const MAX_GRID_CODES = 6;
 export const MIN_AUTO_QR_SIDE = 150;
@@ -143,12 +147,13 @@ export async function createQrRaster(bytes) {
 export async function renderFrame(canvas, bytes) {
   const raster = await createQrRaster(bytes);
   const cssBudget = Math.max(280, Math.floor(Math.min(canvas.clientWidth || 760, canvas.clientHeight || canvas.clientWidth || 760)));
-  const dpr = Math.min(globalThis.devicePixelRatio || 1, 3);
+  const dpr = Math.min(globalThis.devicePixelRatio || 1, 4);
   const scale = Math.max(2, Math.floor((cssBudget * dpr) / raster.size));
   canvas.width = raster.size * scale;
   canvas.height = raster.size * scale;
   canvas.style.width = `${canvas.width / dpr}px`;
   canvas.style.height = `${canvas.height / dpr}px`;
+  canvas.style.imageRendering = 'pixelated';
   const staging = document.createElement('canvas');
   staging.width = raster.size; staging.height = raster.size;
   staging.getContext('2d', { alpha: false }).putImageData(new ImageData(raster.pixels, raster.size, raster.size), 0, 0);
