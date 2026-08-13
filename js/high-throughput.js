@@ -18,7 +18,7 @@ export const TX_MAX_AUTO_CODES = 6;
 // AUTO is based on the physical pixels available to each QR raster cell. B/N
 // tolerates a little less sampling density; chromatic modes need more pixels so
 // that demosaicing/display sub-pixels do not collapse the chroma classification.
-export const TX_MIN_DEVICE_PX_MONO = 3.2;
+export const TX_MIN_DEVICE_PX_MONO = 3.1;
 export const TX_MIN_DEVICE_PX_COLOR = 3.8;
 export const TX_MAX_EFFECTIVE_DPR = 4;
 
@@ -46,6 +46,7 @@ export function minDevicePxForVisualStates(visualStates = 2) {
 
 function inferredVisualStates() {
   const mode = globalThis.document?.getElementById?.('colorMode')?.value;
+  if (!mode) return 2; // deterministic non-DOM/test default
   return mode === 'bw' ? 2 : mode === '8' ? 8 : 4;
 }
 
