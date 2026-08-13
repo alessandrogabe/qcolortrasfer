@@ -44,7 +44,7 @@ Il robust-soliton LT è adattato da Decimen Optical Transfer v0.3.0 (MIT), con a
 
 ## Test
 
-`npm test` / `npm run check` includono ora anche test deterministici dello scheduler ADAPTIVE: dwell a 5/8/20 fps, ceiling ottico, cap AUTO e deadline di repaint. Restano i test precedenti su fountain, perdita simulata, ordine arbitrario, duplicati, QCT1/CRC/SHA, griglia, palette 4/8 stati e PWA.
+`npm test` / `npm run check` includono anche test deterministici dello scheduler ADAPTIVE: dwell a 5/8/20 fps, ceiling ottico, cap AUTO e deadline di repaint. Restano i test precedenti su fountain, perdita simulata, ordine arbitrario, duplicati, QCT1/CRC/SHA, griglia, palette 4/8 stati e PWA. Il canale fisico display→camera resta necessariamente una verifica reale sui dispositivi.
 
 ## GitHub Pages
 
