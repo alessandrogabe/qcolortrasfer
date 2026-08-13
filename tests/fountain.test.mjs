@@ -1,26 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FountainEncoder, FountainDecoder, indicesForSymbol } from '../js/fountain.js';
+import { FountainEncoder, FountainDecoder, dlog, indicesForSymbol, solitonCdf, splitmix32 } from '../js/fountain.js';
 
-test('systematic symbols map one-to-one', () => { assert.deepEqual(indicesForSymbol(0, 4), [0]); assert.deepEqual(indicesForSymbol(3, 4), [3]); });
-test('repair indices are deterministic', () => { assert.deepEqual(indicesForSymbol(12345, 73), indicesForSymbol(12345, 73)); });
-test('fountain decoder reconstructs from all systematic symbols out of order', () => {
-  const input = Uint8Array.from({ length: 997 }, (_, i) => (i * 17 + 3) & 255); const encoder = new FountainEncoder(input, 128); const decoder = new FountainDecoder(encoder.sourceCount, encoder.chunkSize, input.length);
-  for (let id = encoder.sourceCount - 1; id >= 0; id--) decoder.addSymbol(id, encoder.symbol(id).data);
-  assert.equal(decoder.complete, true); assert.deepEqual(decoder.reconstruct(), input);
-});
-test('repair symbols recover dropped systematic symbols', () => {
-  const input = Uint8Array.from({ length: 2048 }, (_, i) => (i * 29 + 11) & 255); const encoder = new FountainEncoder(input, 128); const decoder = new FountainDecoder(encoder.sourceCount, encoder.chunkSize, input.length); const dropped = new Set([2, 7, 11]);
-  for (let id = 0; id < encoder.sourceCount; id++) if (!dropped.has(id)) decoder.addSymbol(id, encoder.symbol(id).data);
-  for (let id = encoder.sourceCount; id < encoder.sourceCount + 800 && !decoder.complete; id++) decoder.addSymbol(id, encoder.symbol(id).data);
-  assert.equal(decoder.complete, true); assert.deepEqual(decoder.reconstruct(), input);
-});
-test('decoder can join after systematic phase and reconstruct from repair stream only', () => {
-  const input = Uint8Array.from({ length: 4096 }, (_, i) => (i * 13 + 101) & 255); const encoder = new FountainEncoder(input, 128); const decoder = new FountainDecoder(encoder.sourceCount, encoder.chunkSize, input.length);
-  for (let id = encoder.sourceCount + 500; id < encoder.sourceCount + 6000 && !decoder.complete; id++) decoder.addSymbol(id, encoder.symbol(id).data);
-  assert.equal(decoder.complete, true); assert.deepEqual(decoder.reconstruct(), input);
-});
-test('duplicate symbols are ignored safely', () => {
-  const input = Uint8Array.from([1, 2, 3, 4]); const encoder = new FountainEncoder(input, 32); const decoder = new FountainDecoder(1, 32, 4); const symbol = encoder.symbol(0);
-  assert.equal(decoder.addSymbol(0, symbol.data), true); assert.equal(decoder.addSymbol(0, symbol.data), false); assert.deepEqual(decoder.reconstruct(), input);
-});
+test('Decimen-compatible deterministic log vectors stay pinned',()=>{assert.equal(dlog(1),0);assert.equal(dlog(1.5),0.4054651081081644);assert.equal(dlog(10),2.3025850929940455);});
+test('robust-soliton CDF is monotonic and terminates at one',()=>{for(const k of [1,2,17,179,866]){const cdf=solitonCdf(k);assert.equal(cdf.length,k);assert.equal(cdf[k-1],1);for(let i=1;i<k;i++)assert.ok(cdf[i]>=cdf[i-1]);}});
+test('recorded Decimen v0.3 frame subsets are preserved',()=>{assert.deepEqual(indicesForSymbol(0,17,4242),[3,14]);assert.deepEqual(indicesForSymbol(1,17,4242),[12,0]);assert.deepEqual(indicesForSymbol(41,179,4242),[28,132,88]);});
+function payload(length){return Uint8Array.from({length},(_,i)=>(i*37+(i>>8)*11)&255);}
+function roundTrip(length,chunk,sessionId,dropRate=0,reverse=false){const input=payload(length);const enc=new FountainEncoder(input,chunk,sessionId);const frames=[];const rnd=splitmix32(sessionId^0x51f15e);const ceiling=enc.sourceCount*5+500;for(let seq=0;seq<ceiling;seq++){if(rnd()*2**-32>=dropRate)frames.push([seq,enc.symbol(seq).data]);}if(reverse)frames.reverse();const dec=new FountainDecoder(enc.sourceCount,chunk,length,sessionId);for(const [seq,data] of frames){dec.addSymbol(seq,data);if(dec.complete)break;}return{input,enc,dec};}
+test('30% optical loss costs time, never correctness',()=>{const{input,enc,dec}=roundTrip(256*1024,512,0x12345678,.30);assert.equal(dec.complete,true);assert.deepEqual(dec.reconstruct(),input);assert.ok(dec.framesNew/enc.sourceCount<1.8);});
+test('frames can arrive out of order',()=>{const{input,dec}=roundTrip(100000,512,77,0,true);assert.equal(dec.complete,true);assert.deepEqual(dec.reconstruct(),input);});
+test('camera rereads of the same QR are ignored safely',()=>{const input=payload(40000);const enc=new FountainEncoder(input,512,31);const dec=new FountainDecoder(enc.sourceCount,512,input.length,31);let seq=0;while(!dec.complete&&seq<enc.sourceCount*5+500){const frame=enc.symbol(seq).data;assert.equal(dec.addSymbol(seq,frame),true);assert.equal(dec.addSymbol(seq,frame),false);seq++;}assert.equal(dec.complete,true);assert.ok(dec.framesDup>0);assert.deepEqual(dec.reconstruct(),input);});

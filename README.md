@@ -1,69 +1,29 @@
 # qcolortrasfer
 
-**PWA open source per trasferire file da uno schermo alla fotocamera di un altro dispositivo, senza backend.**
+PWA open source per trasferire file direttamente dallo schermo di un dispositivo alla fotocamera di un altro, senza Wi‑Fi, Bluetooth, account o backend per i dati del file.
 
-## Stato attuale: baseline QR affidabile
+## Stato attuale: multi-QR baseline
 
-La prima matrice colore custom è stata rimossa dalla pipeline di riferimento perché i test reali su più dispositivi non producevano frame validi. La baseline attuale adotta deliberatamente l'approccio collaudato di **Decimen Optical Transfer v0.3.0 (MIT)** per il livello ottico:
-
-- QR standard bianco/nero con quiet zone;
-- ECC QR livello L;
-- acquisizione dell'intero fotogramma camera;
-- decodifica QR con **ZXing-C++ via zxing-wasm**;
-- due Web Worker paralleli;
-- se i worker sono occupati il frame viene perso senza ritrasmissione;
-- il fountain code assorbe le perdite.
-
-qcolortrasfer mantiene invece i propri layer `QCT1`, CRC32, SHA-256 e fountain LT-style sperimentale.
+La versione 1.2 usa QR standard bianco/nero come canale ottico affidabile e concentra più QR indipendenti nello stesso fotogramma. Il colore resta il passo successivo: prima fissiamo una baseline multi-QR realmente robusta su dispositivi diversi.
 
 ```text
-FILE
-  -> SHA-256
-  -> chunk 320 B
-  -> fountain symbols
-  -> QCT1 + CRC32
-  -> QR standard ECC L
-  -> DISPLAY
-  -> CAMERA full-frame
-  -> ZXing-WASM workers
-  -> QCT1 / CRC32
-  -> fountain decoder
-  -> SHA-256
-  -> FILE
+FILE → SHA-256/QCT1 → blocchi 512 B → LT robust-soliton → 1/2/4/6 QR → CAMERA → ZXing multi-QR → LT peeling → SHA-256 → FILE
 ```
 
-## Perché questa baseline
+### Griglia adattiva
+AUTO sceglie la griglia più densa tra 1, 2, 4 e 6 QR mantenendo circa 150 CSS px per codice. Sei QR diventano 3×2 in orizzontale e 2×3 in verticale. Ogni posizione cambia a fasi sfalsate. Con 6 QR a 3 fps/QR il display può mostrare fino a 18 nuovi simboli fountain al secondo.
 
-Decimen v0.3.0 usa `qrcode` per generare QR standard e `zxing-wasm`/ZXing-C++ per decodificarli nei worker. In questo modo localizzazione, prospettiva, finder, timing pattern ed error correction sono gestiti da una libreria QR matura anziché da un decoder geometrico custom.
+### Perdita di frame
+La v1.2 sostituisce il precedente LT sperimentale con il robust-soliton LT di Decimen Optical Transfer v0.3.0 (MIT), adattato al QCT1 streamId. I frame possono arrivare in qualunque ordine; i mancanti rallentano soltanto la ricezione e le riletture vengono deduplicate. La barra di avanzamento usa i simboli distinti raccolti; il peeling può restare basso e crescere rapidamente verso la fine.
 
-Il colore verrà reintrodotto solo dopo aver misurato una baseline stabile su telefoni reali. L'obiettivo del progetto resta sperimentare un canale ottico multi-stato più veloce, ma senza reinventare le parti che il QR standard risolve già bene.
+### Ricevitore
+Due Web Worker eseguono zxing-wasm/ZXing-C++ sull'intero frame e cercano fino a 8 QR contemporaneamente. La diagnostica mostra QR distinti, duplicati, QR letti, frame camera, frame saltati, pacchetti rifiutati e stato peeling.
 
-## Web app / PWA
-
-URL GitHub Pages:
-
+## GitHub Pages
 `https://alessandrogabe.github.io/qcolortrasfer/`
 
-La web app non invia il contenuto del file a server. Per caricare il motore QR al primo utilizzo usa dipendenze statiche pubbliche (`esm.sh` e `jsDelivr`); il service worker prova a conservarle in cache per gli usi successivi.
-
-## Prima prova
-
-1. Apri la PWA su due dispositivi.
-2. Sul trasmettitore scegli un file piccolo (10-100 KiB).
-3. Parti da **3 fps**.
-4. Sul ricevitore premi **CAMERA START** e inquadra il QR: non serve una guida di allineamento precisa.
-5. La diagnostica distingue frame camera, QR realmente decodificati, pacchetti QCT1 rifiutati e simboli fountain utili.
-6. A ricostruzione completata viene verificato SHA-256 prima di abilitare il download.
-
 ## Test
+`npm test` e `npm run check` coprono vettori deterministici del fountain, perdita simulata del 30%, frame fuori ordine, duplicati e scelta automatica della griglia.
 
-```bash
-npm test
-npm run check
-```
-
-## Licenza e provenienza
-
-Il codice qcolortrasfer è MIT. La baseline ottica è ispirata/adattata dall'architettura di **Decimen Optical Transfer v0.3.0**, anch'essa MIT. Non viene incorporato codice delle versioni Decimen >= v0.4.0 (AGPL).
-
-Le dipendenze runtime sono permissive ma non tutte MIT: `qrcode` è MIT; `zxing-wasm` è MIT e incorpora ZXing-C++ sotto Apache-2.0. Vedi `THIRD_PARTY_NOTICES.md`.
+## Licenza
+qcolortrasfer è MIT. Il fountain robust-soliton è adattato da Decimen Optical Transfer v0.3.0, MIT, Copyright (c) 2026 Evan Crawley (Bash Alarmist). Le release Decimen successive AGPL non vengono incorporate. Vedi `THIRD_PARTY_NOTICES.md`.
