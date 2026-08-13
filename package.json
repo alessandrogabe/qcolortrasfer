@@ -1,10 +1,10 @@
 {
   "name": "qcolortrasfer",
-  "version": "1.5.0-beta.1",
+  "version": "1.6.0-beta.1",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check js/app.js && node --check js/fountain.js && node --check js/protocol.js && node --check js/optical.js && node --check js/color-code.js && node --check js/adaptive-scheduler.js && node --check js/qr-worker.js && node --check sw.js && node --test tests/*.test.mjs"
+    "check": "node --check js/app.js && node --check js/fountain.js && node --check js/protocol.js && node --check js/optical.js && node --check js/color-code.js && node --check js/adaptive-scheduler.js && node --check js/rx-roi.js && node --check js/qr-worker.js && node --check sw.js && node --test tests/*.test.mjs"
   }
 }
