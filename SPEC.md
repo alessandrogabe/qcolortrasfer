@@ -12,21 +12,22 @@ Static installable PWA for one-way screen-to-camera file transfer with no mandat
 6. Base optical channel: ordinary byte-mode QR, ECC L, fixed mask 4.
 7. 4-state default: base QR bit in luminance + independent C1 QR bit in chroma.
 8. Reserved/function modules remain pure B/W and must match between logical QR layers.
-9. AUTO display grid chooses 4 or 6 physical codes only; manual 1/2 remain debug overrides.
-10. AUTO 6 criterion uses viewport, DPR and actual raster size; six codes require >=2.5 device pixels per raster cell.
-11. Default TX target = 24 fps/physical QR; selectable 8/12/24/30/60.
-12. Non-adaptive TX raster generation is moved to 2–4 workers, with lookahead target = 3 raster frames per visible slot.
-13. Painting uses requestAnimationFrame and staggered phases; a long rAF stall resets cadence rather than replaying invisible backlog.
-14. Camera target = 1280-wide, exact 60 fps first, exact 30 fallback, then ideal 60.
-15. RX pool = 2–6 workers, bounded by logical hardware concurrency.
-16. Full-frame ZXing is acquisition/recovery. Crop decode is the hot path.
-17. Crop ZXing disables tryHarder/rotation/inversion/downscale and searches one QR.
-18. Full scan returns both decoded detections and plausible position-only sightings; unconfirmed sightings are probationary and cannot move a confirmed ROI.
-19. ROI TTL = 1600 ms; full scan cadence ~100 ms acquisition, 250 ms degraded, 1500 ms locked.
-20. Crop padding = 30% of detected QR side, clamped to frame boundaries.
-21. C1 reuses base-QR geometry. Reconstructed C1 is rendered as a clean QR and decoded with ZXing `isPure=true`, fixed threshold, no second finder search.
-22. Dedupe + LT peeling reconstruct QCF2; unpack QCF2; verify raw-file SHA-256; expose one download.
-23. Finalization remains guarded by `rxFinalizing/rxComplete`.
+9. Production UI exposes AUTO 4/6, forced 4 and forced 6 only. AUTO never selects fewer than 4 physical QR.
+10. AUTO 6 criterion uses viewport, DPR and actual raster size; six codes require >=2.5 device pixels per raster cell, otherwise four larger QR are used.
+11. Internal 1/2 layout primitives may remain only for compatibility/unit tests and are not production v2 modes.
+12. Default TX target = 24 fps/physical QR; selectable 8/12/24/30/60.
+13. Non-adaptive TX raster generation is moved to 2–4 workers, with lookahead target = 3 raster frames per visible slot.
+14. Painting uses requestAnimationFrame and staggered phases; a long rAF stall resets cadence rather than replaying invisible backlog.
+15. Camera target = 1280-wide, exact 60 fps first, exact 30 fallback, then ideal 60.
+16. RX pool = 2–6 workers, bounded by logical hardware concurrency.
+17. Full-frame ZXing is acquisition/recovery. Crop decode is the hot path.
+18. Crop ZXing disables tryHarder/rotation/inversion/downscale and searches one QR.
+19. Full scan returns both decoded detections and plausible position-only sightings; unconfirmed sightings are probationary and cannot move a confirmed ROI.
+20. ROI TTL = 1600 ms; full scan cadence ~100 ms acquisition, 250 ms degraded, 1500 ms locked.
+21. Crop padding = 30% of detected QR side, clamped to frame boundaries.
+22. C1 reuses base-QR geometry. Reconstructed C1 is rendered as a clean QR and decoded with ZXing `isPure=true`, fixed threshold, no second finder search.
+23. Dedupe + LT peeling reconstruct QCF2; unpack QCF2; verify raw-file SHA-256; expose one download.
+24. Finalization remains guarded by `rxFinalizing/rxComplete`.
 
 ## QCT2 frame layout
 Little-endian/DataView numeric fields as implemented by JavaScript DataView defaults used consistently within qcolortrasfer:
