@@ -1,16 +1,32 @@
-// qcolortrasfer 4-state optical palette.
-// The first visual bit is the ordinary QR luminance bit decoded by ZXing.
-// The second bit is encoded chromatically inside the same module:
-//   dark+warm, dark+cool, light+warm, light+cool = 4 visible states.
-// Function/reserved QR modules stay pure B/W; only data/ECC modules carry color.
+// qcolortrasfer chromatic modulation.
+// Luminance remains the ordinary QR bit read by ZXing. Chroma carries one
+// additional QR bit in 4-state mode or two additional QR bits in 8-state mode.
+// Reserved QR function modules stay pure black/white.
 
-export const COLOR_MODE = 'dual-qr-4color-v1';
+export const COLOR_MODE_4 = 'dual-qr-4color-v1';
+export const COLOR_MODE_8 = 'triple-qr-8color-v1';
+export const COLOR_MODE = COLOR_MODE_4; // backward-compatible alias
 
+// Proven 4-state palette retained unchanged as the stable fallback.
 export const COLOR_PALETTE = Object.freeze({
-  dark0: Object.freeze([150, 20, 20]),   // warm dark red, Y ~= 48
-  dark1: Object.freeze([0, 55, 145]),    // cool dark blue, Y ~= 50
-  light0: Object.freeze([250, 235, 90]), // warm light yellow, Y ~= 228
-  light1: Object.freeze([120, 235, 245]) // cool light cyan, Y ~= 211
+  dark0: Object.freeze([150, 20, 20]),
+  dark1: Object.freeze([0, 55, 145]),
+  light0: Object.freeze([250, 235, 90]),
+  light1: Object.freeze([120, 235, 245])
+});
+
+// Experimental 8-state palette. The four chromatic states occupy four
+// quadrants in two normalized opponent-color axes while dark/light luma bands
+// stay widely separated for the base QR binarizer.
+export const COLOR_PALETTE_8 = Object.freeze({
+  dark00: Object.freeze([240, 0, 0]),
+  dark10: Object.freeze([30, 30, 240]),
+  dark01: Object.freeze([50, 60, 0]),
+  dark11: Object.freeze([0, 60, 60]),
+  light00: Object.freeze([255, 145, 145]),
+  light10: Object.freeze([160, 160, 255]),
+  light01: Object.freeze([205, 205, 15]),
+  light11: Object.freeze([20, 240, 240])
 });
 
 export function rgbForState(primaryDark, colorBit) {
@@ -18,15 +34,26 @@ export function rgbForState(primaryDark, colorBit) {
   return colorBit ? COLOR_PALETTE.light1 : COLOR_PALETTE.light0;
 }
 
+export function rgbForState8(primaryDark, bitA, bitB) {
+  const prefix = primaryDark ? 'dark' : 'light';
+  return COLOR_PALETTE_8[`${prefix}${bitA ? 1 : 0}${bitB ? 1 : 0}`];
+}
+
 export function luma(rgb) {
   return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
 }
 
-// Warm states have R > B, cool states have B > R. Normalize by total light so
-// exposure changes mostly cancel out. This is deliberately independent of the
-// QR luminance bit: both dark/light warm states fall below both cool states.
-export function chromaScore(r, g, b) {
+// Axis A: warm/cool opponent component. Positive is blue/cyan, negative red/yellow.
+export function chromaScoreA(r, g, b) {
   return (b - r) / Math.max(1, r + g + b);
+}
+
+// Backward-compatible name used by the proven 4-state decoder.
+export const chromaScore = chromaScoreA;
+
+// Axis B: green/cyan-yellow versus red/blue-magenta opponent component.
+export function chromaScoreB(r, g, b) {
+  return (2 * g - r - b) / Math.max(1, r + g + b);
 }
 
 export function clusterColorScores(values, minSeparation = 0.08) {
