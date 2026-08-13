@@ -40,7 +40,7 @@ input[type="range"] { flex: 1 1 150px; min-width: 130px; }
 .frame-meta, .file-info, .stats, .note { font-size: 12px; opacity: .82; margin: 8px 0; overflow-wrap: anywhere; }
 .note { border-left: 3px solid var(--border); padding-left: 8px; line-height: 1.45; }
 .rx-stage { position: relative; width: 100%; aspect-ratio: 1; background: #000; overflow: hidden; }
-#rxVideo { width: 100%; height: 100%; object-fit: cover; }
+#rxVideo { width: 100%; height: 100%; object-fit: contain; background: #000; }
 .guide { position: absolute; inset: 8%; border: 2px solid white; box-shadow: 0 0 0 999px rgb(0 0 0 / 34%); pointer-events: none; }
 .guide::before, .guide::after { content: ""; position: absolute; inset: 50% auto auto 50%; width: 18px; height: 1px; background: white; transform: translate(-50%, -50%); }
 .guide::after { width: 1px; height: 18px; }
