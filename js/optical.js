@@ -6,7 +6,9 @@ import {
   COLOR_MODE_4, COLOR_MODE_8, rgbForState, rgbForState8
 } from './color-code.js';
 
-export const CAPACITY_BYTES = 1465;
+// V2 intentionally uses the full QR V40-L byte-mode envelope. QCT2 keeps its
+// own compact header inside this limit, leaving 2925 fountain bytes per layer.
+export const CAPACITY_BYTES = 2953;
 export const QR_ECC = 'L';
 export const QR_MARGIN = 4;
 export const QR_MASK = 4;
@@ -52,7 +54,7 @@ export function chooseGridCount(width, height, minSide = MIN_AUTO_QR_SIDE) {
 
 function validateBytes(bytes, label) {
   if (!(bytes instanceof Uint8Array)) throw new TypeError(`${label} QR payload must be Uint8Array`);
-  if (bytes.length > CAPACITY_BYTES) throw new Error(`${label} QR payload exceeds conservative ${CAPACITY_BYTES} byte limit`);
+  if (bytes.length > CAPACITY_BYTES) throw new Error(`${label} QR payload exceeds ${CAPACITY_BYTES} byte V40-L limit`);
 }
 
 function makeQr(QRCode, bytes, version) {
