@@ -1,9 +1,10 @@
-const CACHE = 'qcolortrasfer-v1.5.0-adaptive-4state';
+const CACHE = 'qcolortrasfer-v1.6.0-rx-roi';
 const CORE = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
   './js/app.js', './js/crc32.js', './js/fountain.js', './js/protocol.js',
-  './js/optical.js', './js/color-code.js', './js/adaptive-scheduler.js', './js/qr-worker.js'
+  './js/optical.js', './js/color-code.js', './js/adaptive-scheduler.js',
+  './js/rx-roi.js', './js/qr-worker.js'
 ];
 const EXTERNAL = new Set(['https://esm.sh', 'https://cdn.jsdelivr.net']);
 self.addEventListener('install', event => { event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(CORE)).then(() => self.skipWaiting())); });
