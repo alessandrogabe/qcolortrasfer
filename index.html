@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#111111">
-  <meta name="description" content="Trasferimento file offline tramite matrici ottiche animate a colori e fountain code.">
+  <meta name="description" content="Trasferimento file ottico via QR animati e fountain code, senza backend.">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="qcolor">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://esm.sh; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://esm.sh https://cdn.jsdelivr.net; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>qcolortrasfer</title>
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="apple-touch-icon" href="./icons/icon-180.png">
@@ -20,16 +20,16 @@
   <div class="title-row">
     <div>
       <h1>qcolortrasfer</h1>
-      <p>Trasferimento file ottico · nessun server · nessun pairing · fountain code</p>
+      <p>Baseline affidabile · QR standard + ZXing-WASM + fountain code · nessun backend</p>
     </div>
     <button id="installPwa" type="button" hidden>INSTALLA APP</button>
   </div>
   <div class="badges">
     <span class="badge">MIT</span>
-    <span class="badge">PWA</span>
+    <span class="badge">QR BASELINE</span>
     <span class="badge" id="netState">rete: —</span>
     <span class="badge" id="pwaState">app: verifica…</span>
-    <span class="badge" id="capacity">capacità: —</span>
+    <span class="badge" id="capacity">baseline: —</span>
   </div>
 </header>
 
@@ -41,39 +41,48 @@
     <div id="txFileInfo" class="file-info">Nessun file selezionato.</div>
     <div class="controls">
       <label for="fps">Velocità</label>
-      <select id="fps"><option value="3">3 fps</option><option value="5">5 fps</option><option value="8" selected>8 fps</option><option value="10">10 fps</option><option value="12">12 fps</option></select>
-      <button id="startTx" type="button">START</button><button id="stopTx" type="button">PAUSA</button><button id="restartTx" type="button">RIPARTI</button><button id="fullTx" type="button">SCHERMO INTERO</button>
+      <select id="fps"><option value="3" selected>3 fps</option><option value="5">5 fps</option><option value="8">8 fps</option><option value="12">12 fps</option><option value="20">20 fps</option></select>
+      <button id="startTx" type="button">START</button>
+      <button id="stopTx" type="button">PAUSA</button>
+      <button id="restartTx" type="button">RIPARTI</button>
+      <button id="fullTx" type="button">SCHERMO INTERO</button>
     </div>
     <div id="txStatus" class="status">Seleziona un file.</div>
-    <div id="txStage" class="tx-stage"><canvas id="txCanvas" aria-label="Frame ottico a colori"></canvas></div>
+    <div id="txStage" class="tx-stage"><canvas id="txCanvas" aria-label="QR animato"></canvas></div>
     <div id="txFrame" class="frame-meta">—</div>
-    <div class="note">Per la prima prova usa 5–8 fps, luminosità dello schermo alta e i due dispositivi quasi frontali. Il trasmettitore continua a generare simboli di riparazione finché il ricevitore completa il file.</div>
+    <div class="note">Questa versione usa un QR standard bianco/nero con quiet zone ed ECC, come baseline. Il fountain code continua a rendere innocui i frame persi. Il colore verrà reintrodotto solo dopo aver verificato il canale QR su dispositivi reali.</div>
   </section>
 
   <section class="panel" aria-labelledby="rx-title">
     <div class="section-title"><h2 id="rx-title">RICEVI</h2><span class="step">2</span></div>
-    <div class="controls"><button id="startRx" type="button">CAMERA START</button><button id="stopRx" type="button">CAMERA STOP</button><button id="resetRx" type="button">RESET</button></div>
-    <div class="controls compact"><label for="guideSize">Area codice</label><input id="guideSize" type="range" min="62" max="94" step="1" value="84"><output id="guideValue" for="guideSize">84%</output></div>
-    <div id="rxStatus" class="status">Avvia la fotocamera e inquadra il quadrato ottico.</div>
-    <div class="rx-stage"><video id="rxVideo" playsinline muted></video><div id="guide" class="guide" aria-hidden="true"></div></div>
+    <div class="controls">
+      <button id="startRx" type="button">CAMERA START</button>
+      <button id="stopRx" type="button">CAMERA STOP</button>
+      <button id="resetRx" type="button">RESET</button>
+    </div>
+    <div id="rxStatus" class="status">Avvia la fotocamera e inquadra il QR. Non serve allineare una griglia manuale.</div>
+    <div class="rx-stage"><video id="rxVideo" playsinline muted></video></div>
     <canvas id="rxCanvas"></canvas>
     <progress id="rxProgress" max="100" value="0"></progress>
-    <div id="rxStats" class="stats">0 simboli validi · 0 letture scartate</div>
+    <div id="rxStats" class="stats">0 simboli fountain validi · 0 QR letti · 0 frame camera</div>
     <a id="download" class="download" hidden>Scarica file</a>
-    <div class="note">Regola “Area codice” finché il bordo esterno del codice coincide con la guida. CRC32 elimina le letture corrotte; il decoder fountain ricostruisce i blocchi persi; SHA-256 verifica il file finale.</div>
+    <div class="note">Il ricevitore invia l'intero fotogramma a due worker ZXing-WASM. ZXing individua e rettifica il QR; i frame non decodificati vengono ignorati. Non c'è più il nostro rilevatore di finder.</div>
   </section>
 
   <section class="panel diagnostics" aria-labelledby="diag-title">
     <div class="section-title"><h2 id="diag-title">DIAGNOSTICA</h2><span class="step">i</span></div>
     <div id="selfTest" class="status">Autotest: in esecuzione…</div>
     <div class="diag-grid">
-      <div><strong>Protocollo</strong><span>QCT1 / v1</span></div><div><strong>Modulazione</strong><span>4 colori / 2 bit per cella</span></div><div><strong>Fountain</strong><span>LT-style originale / sistematico + repair</span></div><div><strong>Integrità</strong><span>CRC32 frame + SHA-256 file</span></div>
+      <div><strong>Trasporto</strong><span>QR standard / ECC L</span></div>
+      <div><strong>Decoder</strong><span>ZXing-C++ WASM / 2 worker</span></div>
+      <div><strong>Fountain</strong><span>qcolor LT-style / sistematico + repair</span></div>
+      <div><strong>Integrità</strong><span>QR ECC + CRC32 + SHA-256</span></div>
     </div>
     <details><summary>Log tecnico</summary><pre id="log"></pre></details>
   </section>
 </main>
 
-<footer>qcolortrasfer è software libero MIT. Il contenuto del file non viene caricato su server. La rete serve solo a scaricare/aggiornare i file statici della PWA; dopo il primo caricamento l'app può funzionare offline. Vedi README e THIRD_PARTY_NOTICES per attribuzioni e limiti.</footer>
+<footer>qcolortrasfer è software libero MIT. La baseline ottica riusa l'approccio di Decimen Optical Transfer v0.3.0 (MIT) e dipendenze permissive indicate in THIRD_PARTY_NOTICES. Il file non viene caricato su server.</footer>
 <script type="module" src="./js/app.js"></script>
 </body>
 </html>
