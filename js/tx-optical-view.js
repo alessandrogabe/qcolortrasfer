@@ -1,4 +1,5 @@
 // qcolortrasfer TX optical view controller.
+// UI concept: QR A TUTTO SCHERMO.
 //
 // The normal INVIA screen is configuration only. The QR stage is parked outside
 // the visible page; pressing the normal START button moves it into a dedicated
@@ -36,8 +37,6 @@ function visibleViewportSize() {
 function requestTxLayoutRefresh() {
   cancelAnimationFrame(refreshRaf);
   refreshRaf = requestAnimationFrame(() => {
-    // app.js owns QR sizing and AUTO 4/6. Reuse its resize path after changing
-    // viewport instead of duplicating optical layout rules in this UI module.
     window.dispatchEvent(new Event('resize'));
   });
 }
@@ -65,11 +64,9 @@ function unlockPage() {
 
 export function enterTxOpticalView() {
   if (active || !shell) return;
-
   marker = document.createComment('qcolortrasfer-tx-optical-origin');
   shell.parentNode?.insertBefore(marker, shell);
   body.appendChild(shell);
-
   active = true;
   shell.classList.remove('immersive-fallback');
   shell.classList.add('tx-optical-overlay');
@@ -80,13 +77,11 @@ export function enterTxOpticalView() {
 
 export function exitTxOpticalView() {
   if (!active || !shell) return;
-
   active = false;
   shell.classList.remove('tx-optical-overlay', 'immersive-fallback');
   shell.removeAttribute('data-optical-view');
   shell.style.removeProperty('--tx-optical-width');
   shell.style.removeProperty('--tx-optical-height');
-
   if (marker?.parentNode) {
     marker.parentNode.insertBefore(shell, marker);
     marker.remove();
@@ -96,9 +91,7 @@ export function exitTxOpticalView() {
   requestTxLayoutRefresh();
 }
 
-function hasPreparedFile() {
-  return Boolean(fileInput?.files?.length);
-}
+function hasPreparedFile() { return Boolean(fileInput?.files?.length); }
 
 function enterFromMainStart() {
   // Capture phase runs before app.js' normal START handler. We only prepare the
@@ -116,9 +109,6 @@ function enterFromMainStart() {
 }
 
 function interceptLegacyEnter(event) {
-  // Hidden compatibility control kept because legacy app.js still binds it.
-  // If invoked programmatically, route it to the same optical view and prevent
-  // the old Fullscreen API path from executing.
   event.preventDefault();
   event.stopImmediatePropagation();
   if (!hasPreparedFile()) return;
@@ -128,7 +118,6 @@ function interceptLegacyEnter(event) {
 
 function pauseAndExit() {
   if (!active) return;
-  // Use app.js' public STOP control so TX cannot remain active behind config UI.
   stopButton?.click();
   exitTxOpticalView();
 }
@@ -139,24 +128,16 @@ function interceptExit(event) {
   pauseAndExit();
 }
 
-function blockPan(event) {
-  if (active) event.preventDefault();
-}
+function blockPan(event) { if (active) event.preventDefault(); }
 
 startButton?.addEventListener('click', enterFromMainStart, { capture: true });
 legacyEnterButton?.addEventListener('click', interceptLegacyEnter, { capture: true });
 exitButton?.addEventListener('click', interceptExit, { capture: true });
-
-// On iOS overflow:hidden alone does not reliably suppress rubber-band and
-// sideways movement, so block the gestures while optical view is active.
 document.addEventListener('touchmove', blockPan, { passive: false });
 document.addEventListener('gesturestart', blockPan, { passive: false });
 window.addEventListener('wheel', blockPan, { passive: false });
-
 window.visualViewport?.addEventListener('resize', syncOpticalViewport);
 window.visualViewport?.addEventListener('scroll', syncOpticalViewport);
 window.addEventListener('orientationchange', syncOpticalViewport);
 window.addEventListener('pagehide', () => { if (active) pauseAndExit(); });
-document.addEventListener('keydown', event => {
-  if (active && event.key === 'Escape') pauseAndExit();
-});
+document.addEventListener('keydown', event => { if (active && event.key === 'Escape') pauseAndExit(); });
