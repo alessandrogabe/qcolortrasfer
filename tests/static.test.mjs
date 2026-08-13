@@ -9,6 +9,14 @@ test('V40-L envelope exposes 2925-byte QCT2 fountain payload',()=>{
   assert.equal(CAPACITY_BYTES,2953); assert.equal(MAX_HIGH_THROUGHPUT_CHUNK,2925);
 });
 
+test('home launcher exposes send receive views and keeps detailed telemetry',async()=>{
+  const html=await readFile(root('index.html'),'utf8');
+  assert.match(html,/id="homeView"/); assert.match(html,/id="workspaceView"/);
+  assert.match(html,/id="goTx"/); assert.match(html,/id="goRx"/);
+  assert.match(html,/class="ascii-logo"/); assert.match(html,/id="txFrame"/); assert.match(html,/id="rxStats"/);
+  assert.match(html,/DIAGNOSTICA E STATISTICHE DETTAGLIATE/); assert.match(html,/\.\/js\/ui-shell\.js/);
+});
+
 test('UI defaults to QCT2 max payload, 4-state high-throughput, 24 fps and AUTO 4/6 only',async()=>{
   const html=await readFile(root('index.html'),'utf8');
   assert.match(html,/value="2925" selected/); assert.match(html,/value="4" selected>4 stati · 2 canali HIGH THROUGHPUT/);
@@ -18,6 +26,12 @@ test('UI defaults to QCT2 max payload, 4-state high-throughput, 24 fps and AUTO 
   assert.match(grid,/value="auto" selected/); assert.match(grid,/value="4"/); assert.match(grid,/value="6"/);
   assert.doesNotMatch(grid,/value="1"/); assert.doesNotMatch(grid,/value="2"/);
   assert.equal(MAX_GRID_CODES,6); assert.equal(VISUAL_STATES_4,4); assert.equal(VISUAL_STATES_8,8);
+});
+
+test('UI shell switches modes through existing controls',async()=>{
+  const js=await readFile(root('js/ui-shell.js'),'utf8');
+  assert.match(js,/showAppView/); assert.match(js,/stopInactiveEngines/);
+  assert.match(js,/stopTx/); assert.match(js,/stopRx/); assert.match(js,/dispatchEvent/);
 });
 
 test('PWA manifest keeps relative GitHub Pages paths',async()=>{
@@ -43,7 +57,8 @@ test('TX raster generation is moved to a dedicated worker',async()=>{
   assert.match(js,/createDualQrRaster/); assert.match(js,/createTripleQrRaster/); assert.match(js,/pixels\.buffer/);
 });
 
-test('service worker precaches complete v2 runtime',async()=>{
+test('service worker precaches complete v2.1 UI and high-throughput runtime',async()=>{
   const sw=await readFile(root('sw.js'),'utf8');
-  assert.match(sw,/v2\.0\.0-high-throughput-color/); assert.match(sw,/\.\/js\/high-throughput\.js/); assert.match(sw,/\.\/js\/tx-worker\.js/); assert.match(sw,/\.\/js\/rx-roi\.js/); assert.match(sw,/\.\/js\/qr-worker\.js/);
+  assert.match(sw,/v2\.1\.0-home-launcher/); assert.match(sw,/\.\/js\/ui-shell\.js/);
+  assert.match(sw,/\.\/js\/high-throughput\.js/); assert.match(sw,/\.\/js\/tx-worker\.js/); assert.match(sw,/\.\/js\/rx-roi\.js/); assert.match(sw,/\.\/js\/qr-worker\.js/);
 });
