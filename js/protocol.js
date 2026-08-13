@@ -14,6 +14,7 @@ export const MAGIC_V2 = 0x51435432; // "QCT2"
 export const VERSION_V2 = 2;
 export const HEADER_BYTES_V2 = 24;
 export const FLAG_V2_COLOR_8 = 1;
+export const FLAG_V2_MONO = 2;
 
 // File container carried by the fountain in QCT2.
 export const FILE_MAGIC_V2 = 0x51434632; // "QCF2"
@@ -53,7 +54,6 @@ export async function sha256Hex(bytes) {
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-// ---- QCT1 legacy ------------------------------------------------------------
 export function encodeOpticalPacket(meta, symbolId, payload) {
   if (payload.length > 65535) throw new Error('Payload too large');
   const out = new Uint8Array(HEADER_BYTES + payload.length + 4);
@@ -97,7 +97,6 @@ function decodeOpticalPacketV1(bytes) {
   };
 }
 
-// ---- QCT2 high-throughput ---------------------------------------------------
 export function packFileContainerV2(fileName, fileBytes, sha256 = null) {
   if (!(fileBytes instanceof Uint8Array)) throw new TypeError('fileBytes must be Uint8Array');
   if (fileBytes.length > 0xffffffff) throw new Error('File too large for QCF2');
@@ -126,20 +125,17 @@ export function unpackFileContainerV2(container) {
   if (headerBytes !== FILE_HEADER_BASE_V2 + nameLength || headerBytes > container.length) throw new Error('Invalid QCF2 header');
   if (headerBytes + fileLength !== container.length) throw new Error('Invalid QCF2 file length');
   const fileName = decoder.decode(container.subarray(FILE_HEADER_BASE_V2, FILE_HEADER_BASE_V2 + nameLength)) || 'qcolortrasfer.bin';
-  return {
-    fileName, fileLength,
-    sha256: (flags & 1) ? bytesToHex(container.subarray(16, 48)) : null,
-    bytes: container.slice(headerBytes)
-  };
+  return { fileName, fileLength, sha256: (flags & 1) ? bytesToHex(container.subarray(16, 48)) : null, bytes: container.slice(headerBytes) };
 }
 
 export function encodeOpticalPacketV2(meta, symbolId, payload) {
   if (!(payload instanceof Uint8Array) || payload.length !== meta.chunkSize) throw new Error('Invalid QCT2 payload');
   if (!Number.isInteger(meta.sourceCount) || meta.sourceCount < 1 || meta.sourceCount > 0xffff) throw new Error('QCT2 source count out of range');
   if (!Number.isInteger(meta.containerLength) || meta.containerLength < 1 || meta.containerLength > 0xffffffff) throw new Error('Invalid QCT2 container length');
+  if (![2, 4, 8].includes(meta.visualStates)) throw new Error('Invalid QCT2 visual state count');
   const out = new Uint8Array(HEADER_BYTES_V2 + payload.length + 4);
   const view = new DataView(out.buffer);
-  const flags = meta.visualStates === 8 ? FLAG_V2_COLOR_8 : 0;
+  const flags = (meta.visualStates === 8 ? FLAG_V2_COLOR_8 : 0) | (meta.visualStates === 2 ? FLAG_V2_MONO : 0);
   view.setUint32(0, MAGIC_V2); view.setUint8(4, VERSION_V2); view.setUint8(5, flags); view.setUint16(6, HEADER_BYTES_V2);
   view.setUint32(8, meta.streamId >>> 0); view.setUint32(12, symbolId >>> 0); view.setUint16(16, meta.sourceCount); view.setUint16(18, meta.chunkSize); view.setUint32(20, meta.containerLength >>> 0);
   out.set(payload, HEADER_BYTES_V2);
@@ -153,6 +149,7 @@ function decodeOpticalPacketV2(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getUint32(0) !== MAGIC_V2 || view.getUint8(4) !== VERSION_V2 || view.getUint16(6) !== HEADER_BYTES_V2) throw new Error('Invalid QCT2 header');
   const flags = view.getUint8(5); const sourceCount = view.getUint16(16); const chunkSize = view.getUint16(18); const containerLength = view.getUint32(20);
+  if ((flags & FLAG_V2_COLOR_8) && (flags & FLAG_V2_MONO)) throw new Error('Invalid QCT2 visual flags');
   const end = HEADER_BYTES_V2 + chunkSize;
   if (sourceCount < 1 || chunkSize < 1 || containerLength < 1 || bytes.length < end + 4) throw new Error('Invalid QCT2 fountain metadata');
   if (sourceCount !== Math.max(1, Math.ceil(containerLength / chunkSize))) throw new Error('Inconsistent QCT2 source count');
@@ -163,7 +160,7 @@ function decodeOpticalPacketV2(bytes) {
     streamId: view.getUint32(8), symbolId: view.getUint32(12), sourceCount, chunkSize,
     transferLength: containerLength, containerLength,
     fileLength: null, fileName: null, sha256: null,
-    visualStates: (flags & FLAG_V2_COLOR_8) ? 8 : 4,
+    visualStates: (flags & FLAG_V2_MONO) ? 2 : (flags & FLAG_V2_COLOR_8) ? 8 : 4,
     payload: bytes.slice(HEADER_BYTES_V2, end)
   };
 }
