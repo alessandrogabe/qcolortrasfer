@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#111111">
+  <meta name="theme-color" content="#081018">
   <meta name="description" content="Trasferimento file ottico high-throughput multi-QR a colori con fountain code, senza backend.">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -16,45 +16,111 @@
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-<header>
-  <div class="title-row"><div class="brand"><h1>qcolortrasfer</h1><span>high-throughput chromatic QR transfer</span></div><button id="installPwa" type="button" hidden>INSTALLA</button></div>
-  <div class="badges"><span class="badge">MIT</span><span class="badge" id="colorBadge">4 STATI · HIGH THROUGHPUT</span><span class="badge">QCT2</span><span class="badge">RX ROI</span><span class="badge">ZXing-WASM</span><span class="badge" id="netState">rete: —</span><span class="badge" id="pwaState">app: verifica…</span><span class="badge" id="capacity">—</span></div>
-</header>
-<main>
-  <section class="panel tx-panel" aria-labelledby="tx-title">
-    <div class="section-title"><h2 id="tx-title">TRASMETTI</h2><span id="gridState" class="step">4 QR</span></div>
-    <div class="tx-toolbar">
-      <label class="file-control"><span>File</span><input id="fileInput" type="file"></label>
-      <label><span>Payload / canale</span><select id="payloadBytes"><option value="1024">1024 B</option><option value="1365">1365 B SAFE</option><option value="2048">2048 B</option><option value="2560">2560 B</option><option value="2925" selected>2925 B MAX</option></select></label>
-      <label><span>Modalità colore</span><select id="colorMode"><option value="4" selected>4 stati · 2 canali HIGH THROUGHPUT</option><option value="4a">4 stati · 2 canali ADAPTIVE fallback</option><option value="8">8 stati · 3 canali EXP</option></select></label>
-      <label><span>fps / QR</span><select id="fps"><option value="8">8</option><option value="12">12</option><option value="24" selected>24</option><option value="30">30</option><option value="60">60 MAX</option></select></label>
-      <label><span>Griglia</span><select id="gridMode"><option value="auto" selected>AUTO 4/6</option><option value="4">4 QR</option><option value="6">6 QR</option></select></label>
-      <div class="toolbar-buttons"><button id="startTx" type="button">START</button><button id="stopTx" type="button">PAUSA</button><button id="fullTx" type="button">SCHERMO INTERO</button></div>
-    </div>
-    <div id="txFileInfo" class="file-info">Nessun file selezionato.</div>
-    <div id="txStatus" class="status">Seleziona un file.</div>
-    <div id="txStage" class="tx-stage"><canvas id="txCanvas" aria-label="Griglia di QR cromatici high-throughput"></canvas></div>
-    <div id="txFrame" class="frame-meta">—</div>
-    <div class="note"><strong>V2 HIGH THROUGHPUT:</strong> usa QR standard ECC L quasi a capacità V40, header QCT2 compatto, mask fisso, lookahead generato in worker e repaint sfalsati. AUTO usa <strong>6 QR</strong> quando ogni codice resta abbastanza grande sul display, altrimenti <strong>4 QR</strong>. Ogni QR fisico trasporta due QR logici: luminanza + crominanza.</div>
-  </section>
-  <section class="panel rx-panel" aria-labelledby="rx-title">
-    <div class="section-title"><h2 id="rx-title">RICEVI</h2><span class="step">ROI FAST</span></div>
-    <div class="rx-layout">
-      <div class="rx-stage"><video id="rxVideo" playsinline muted></video></div>
-      <div class="rx-side">
-        <div class="controls"><button id="startRx" type="button">CAMERA START</button><button id="stopRx" type="button">STOP</button><button id="resetRx" type="button">RESET</button></div>
-        <div id="rxStatus" class="status">Avvia la fotocamera e inquadra l'intera griglia QR colorata.</div>
-        <progress id="rxProgress" max="100" value="0"></progress>
-        <div id="rxStats" class="stats">0 distinti · base 0 · C1 0/0 · 0 KiB/s · ROI 0/0</div>
-        <a id="download" class="download" hidden>Scarica file</a>
-        <div class="note"><strong>RX FAST:</strong> tenta 1280×960@60 fps, usa fino a 6 worker in base ai core disponibili, full scan solo per acquisizione/recupero e crop veloci per i QR già localizzati. C1 riusa la geometria del QR base e viene decodificato come QR sintetico puro, senza una seconda ricerca del finder.</div>
+  <section id="homeView" class="home-view" aria-labelledby="homeTitle">
+    <div class="home-grid" aria-hidden="true"></div>
+    <div class="home-shell">
+      <div class="home-kicker">SCREEN → CAMERA · NO BACKEND · MIT</div>
+      <pre class="ascii-logo" aria-label="qcolortrasfer logo">   ██████   ██████  ██████  ██       ██████  ██████
+  ██    ██ ██      ██    ██ ██      ██    ██ ██   ██
+  ██ ▄▄ ██ ██      ██    ██ ██      ██    ██ ██████
+  ██  ██ ██ ██      ██    ██ ██      ██    ██ ██   ██
+   ██████   ██████  ██████  ███████  ██████  ██   ██
+      ▀▀</pre>
+      <h1 id="homeTitle">qcolortrasfer</h1>
+      <p class="home-lead">Trasferisci file direttamente da uno schermo alla fotocamera di un altro dispositivo. QR multipli colorati, fountain code e ricezione ad alta velocità: nessun account, nessun server dati, nessuna rete necessaria per il trasferimento.</p>
+
+      <div class="launch-actions" aria-label="Scegli modalità">
+        <button id="goTx" class="launch-card launch-send" type="button">
+          <span class="launch-index">01</span>
+          <span class="launch-title">INVIA</span>
+          <span class="launch-copy">Scegli un file e trasformalo in un flusso ottico QCT2 multi-QR a colori.</span>
+          <span class="launch-meta">4/6 QR · 2 canali · fino a 2925 B/canale · 60 fps max</span>
+          <span class="launch-arrow" aria-hidden="true">→</span>
+        </button>
+        <button id="goRx" class="launch-card launch-receive" type="button">
+          <span class="launch-index">02</span>
+          <span class="launch-title">RICEVI</span>
+          <span class="launch-copy">Apri la fotocamera, aggancia le ROI e ricostruisci il file dai simboli ricevuti.</span>
+          <span class="launch-meta">RX 1280@60 target · 2–6 worker · SHA-256 finale</span>
+          <span class="launch-arrow" aria-hidden="true">→</span>
+        </button>
       </div>
+
+      <div class="home-tech" aria-label="Caratteristiche principali">
+        <span>QCT2</span><span>4-STATE COLOR</span><span>FOUNTAIN LT</span><span>AUTO 4/6</span><span>ROI FAST</span><span>PWA OFFLINE</span>
+      </div>
+      <p class="home-footnote">La rete può servire solo al primo caricamento delle librerie; il file viaggia esclusivamente attraverso lo schermo e la fotocamera.</p>
     </div>
-    <canvas id="rxCanvas" hidden></canvas>
   </section>
-  <section class="panel diagnostics" aria-labelledby="diag-title"><details><summary id="diag-title">DIAGNOSTICA</summary><div id="selfTest" class="status">Autotest: in esecuzione…</div><div class="diag-grid"><div><strong>Protocollo</strong><span>QCT2 24 B header · QCT1 ancora leggibile</span></div><div><strong>Display</strong><span>AUTO 4/6 QR · 2925 B/canale · 24 fps default · 60 max</span></div><div><strong>TX</strong><span>worker raster + lookahead ×3 + repaint rAF sfalsato</span></div><div><strong>RX</strong><span>1280@60 target · ROI/crop · 2–6 worker · C1 pure decode</span></div></div><pre id="log"></pre></details></section>
-</main>
-<footer>qcolortrasfer è software libero MIT. Il robust-soliton e la baseline QR riconoscono esplicitamente Decimen Optical Transfer v0.3.0 MIT. La v2 reimplementa indipendentemente principi high-throughput generali (QR densi, lookahead, flip sfalsati, ROI/crop) e aggiunge il layer cromatico qcolor; nessun codice AGPL di Decimen ≥0.4 è incorporato.</footer>
-<script type="module" src="./js/app.js"></script>
+
+  <div id="workspaceView" class="workspace-view" hidden>
+    <header class="app-header">
+      <div class="header-main">
+        <button id="goHome" class="home-button" type="button" aria-label="Torna alla schermata iniziale">← HOME</button>
+        <div class="brand"><h1>qcolortrasfer</h1><span>high-throughput chromatic QR transfer</span></div>
+        <nav class="mode-switch" aria-label="Modalità">
+          <button id="switchTx" type="button">INVIA</button>
+          <button id="switchRx" type="button">RICEVI</button>
+        </nav>
+        <button id="installPwa" type="button" hidden>INSTALLA</button>
+      </div>
+      <div class="badges"><span class="badge">MIT</span><span class="badge" id="colorBadge">4 STATI · HIGH THROUGHPUT</span><span class="badge">QCT2</span><span class="badge">RX ROI</span><span class="badge">ZXing-WASM</span><span class="badge" id="netState">rete: —</span><span class="badge" id="pwaState">app: verifica…</span><span class="badge" id="capacity">—</span></div>
+    </header>
+
+    <main>
+      <section id="txView" class="panel tx-panel mode-panel" aria-labelledby="tx-title">
+        <div class="section-title"><div><span class="section-eyebrow">TRASMISSIONE</span><h2 id="tx-title">INVIA FILE</h2></div><span id="gridState" class="step">4 QR</span></div>
+        <div class="tx-toolbar">
+          <label class="file-control"><span>File</span><input id="fileInput" type="file"></label>
+          <label><span>Payload / canale</span><select id="payloadBytes"><option value="1024">1024 B</option><option value="1365">1365 B SAFE</option><option value="2048">2048 B</option><option value="2560">2560 B</option><option value="2925" selected>2925 B MAX</option></select></label>
+          <label><span>Modalità colore</span><select id="colorMode"><option value="4" selected>4 stati · 2 canali HIGH THROUGHPUT</option><option value="4a">4 stati · 2 canali ADAPTIVE fallback</option><option value="8">8 stati · 3 canali EXP</option></select></label>
+          <label><span>fps / QR</span><select id="fps"><option value="8">8</option><option value="12">12</option><option value="24" selected>24</option><option value="30">30</option><option value="60">60 MAX</option></select></label>
+          <label><span>Griglia</span><select id="gridMode"><option value="auto" selected>AUTO 4/6</option><option value="4">4 QR</option><option value="6">6 QR</option></select></label>
+          <div class="toolbar-buttons"><button id="startTx" class="primary-action" type="button">START</button><button id="stopTx" type="button">PAUSA</button><button id="fullTx" type="button">SCHERMO INTERO</button></div>
+        </div>
+        <div id="txFileInfo" class="file-info">Nessun file selezionato.</div>
+        <div id="txStatus" class="status" aria-live="polite">Seleziona un file.</div>
+        <div id="txStage" class="tx-stage"><canvas id="txCanvas" aria-label="Griglia di QR cromatici high-throughput"></canvas></div>
+        <div id="txFrame" class="frame-meta telemetry-line">—</div>
+        <div class="note"><strong>V2 HIGH THROUGHPUT:</strong> usa QR standard ECC L quasi a capacità V40, header QCT2 compatto, mask fisso, lookahead generato in worker e repaint sfalsati. AUTO usa <strong>6 QR</strong> quando ogni codice resta abbastanza grande sul display, altrimenti <strong>4 QR</strong>. Ogni QR fisico trasporta due QR logici: luminanza + crominanza.</div>
+      </section>
+
+      <section id="rxView" class="panel rx-panel mode-panel" aria-labelledby="rx-title" hidden>
+        <div class="section-title"><div><span class="section-eyebrow">RICEZIONE</span><h2 id="rx-title">RICEVI FILE</h2></div><span class="step">ROI FAST</span></div>
+        <div class="rx-layout">
+          <div class="rx-stage"><video id="rxVideo" playsinline muted></video></div>
+          <div class="rx-side">
+            <div class="controls"><button id="startRx" class="primary-action" type="button">CAMERA START</button><button id="stopRx" type="button">STOP</button><button id="resetRx" type="button">RESET</button></div>
+            <div id="rxStatus" class="status" aria-live="polite">Avvia la fotocamera e inquadra l'intera griglia QR colorata.</div>
+            <progress id="rxProgress" max="100" value="0"></progress>
+            <div class="telemetry-title">TELEMETRIA LIVE</div>
+            <div id="rxStats" class="stats telemetry-line">0 distinti · base 0 · C1 0/0 · 0 KiB/s · ROI 0/0</div>
+            <a id="download" class="download" hidden>Scarica file</a>
+            <div class="note"><strong>RX FAST:</strong> tenta 1280×960@60 fps, usa fino a 6 worker in base ai core disponibili, full scan solo per acquisizione/recupero e crop veloci per i QR già localizzati. C1 riusa la geometria del QR base e viene decodificato come QR sintetico puro, senza una seconda ricerca del finder.</div>
+          </div>
+        </div>
+        <canvas id="rxCanvas" hidden></canvas>
+      </section>
+
+      <section class="panel diagnostics" aria-labelledby="diag-title">
+        <details>
+          <summary id="diag-title">DIAGNOSTICA E STATISTICHE DETTAGLIATE</summary>
+          <div id="selfTest" class="status">Autotest: in esecuzione…</div>
+          <div class="diag-grid">
+            <div><strong>Protocollo</strong><span>QCT2 24 B header · QCT1 ancora leggibile</span></div>
+            <div><strong>Display</strong><span>AUTO 4/6 QR · 2925 B/canale · 24 fps default · 60 max</span></div>
+            <div><strong>TX</strong><span>worker raster + lookahead ×3 + repaint rAF sfalsato</span></div>
+            <div><strong>RX</strong><span>1280@60 target · ROI/crop · 2–6 worker · C1 pure decode</span></div>
+          </div>
+          <pre id="log"></pre>
+        </details>
+      </section>
+    </main>
+
+    <footer>qcolortrasfer è software libero MIT. Il robust-soliton e la baseline QR riconoscono esplicitamente Decimen Optical Transfer v0.3.0 MIT. La v2 reimplementa indipendentemente principi high-throughput generali (QR densi, lookahead, flip sfalsati, ROI/crop) e aggiunge il layer cromatico qcolor; nessun codice AGPL di Decimen ≥0.4 è incorporato.</footer>
+  </div>
+
+  <script type="module" src="./js/ui-shell.js"></script>
+  <script type="module" src="./js/app.js"></script>
 </body>
 </html>
