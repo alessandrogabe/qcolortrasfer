@@ -6,7 +6,7 @@ import {
 } from './protocol.js';
 import {
   CAPACITY_BYTES, QR_ECC, MAX_GRID_CODES,
-  createDualQrRaster, createTripleQrRaster, gridDims
+  createQrRaster, createDualQrRaster, createTripleQrRaster, gridDims
 } from './optical.js';
 import {
   adaptiveDwellMs, adaptiveGridCap, adaptiveNextPaintAt, adaptiveOpticalFpsCeiling
@@ -61,8 +61,9 @@ function estimatedFountainTarget(k) { if(k<=4)return Math.max(k,Math.ceil(k*2.5)
 // ---- TX profile -------------------------------------------------------------
 function selectedColorMode() { return $('colorMode').value; }
 function isAdaptiveMode() { return selectedColorMode() === '4a'; }
-function selectedVisualStates() { return selectedColorMode() === '8' ? 8 : 4; }
-function channelsPerQr() { return selectedVisualStates() === 8 ? 3 : 2; }
+function selectedVisualStates() { const mode=selectedColorMode(); return mode==='bw'?2:mode==='8'?8:4; }
+function channelsForVisualStates(visualStates) { return visualStates===8?3:visualStates===2?1:2; }
+function channelsPerQr() { return channelsForVisualStates(selectedVisualStates()); }
 function selectedChunkBytes() { return Math.max(512, Math.min(MAX_HIGH_THROUGHPUT_CHUNK, Number($('payloadBytes').value) || MAX_HIGH_THROUGHPUT_CHUNK)); }
 function selectedFps() { return Math.max(1, Math.min(60, Number($('fps').value) || 24)); }
 
@@ -120,26 +121,28 @@ function paintTxCell(index,item) {
   state.txCellPaintedAt[index]=performance.now();state.txLastItem=item;updateTxMeta();
 }
 function updateModeBadge() {
-  if(selectedColorMode()==='8')$('colorBadge').textContent='8 STATI · 3 CANALI EXP';
+  if(selectedColorMode()==='bw')$('colorBadge').textContent='B/N · 1 CANALE BASELINE';
+  else if(selectedColorMode()==='8')$('colorBadge').textContent='8 STATI · 3 CANALI EXP';
   else if(isAdaptiveMode())$('colorBadge').textContent='4 STATI · ADAPTIVE';
   else $('colorBadge').textContent='4 STATI · HIGH THROUGHPUT';
 }
 function updateTxMeta() {
   if(!state.encoder||!state.txLastItem){updateModeBadge();return;}
-  const requested=selectedFps(),channels=state.meta.visualStates===8?3:2;
+  const requested=selectedFps(),channels=channelsForVisualStates(state.meta.visualStates);
   const optical=isAdaptiveMode()?adaptiveOpticalFpsCeiling(requested):requested;
   const theoretical=theoreticalFountainKiBs(state.encoder.chunkSize,optical,state.txSlots,channels);
   const elapsed=state.txStartedAt?Math.max(0.001,(performance.now()-state.txStartedAt)/1000):0,actual=elapsed?(state.txSymbolsShown/elapsed).toFixed(1):'—';
   const fpsText=isAdaptiveMode()&&optical+0.01<requested?`${requested} target / ≤${optical.toFixed(1)} ottici`:`${requested} fps/QR`;
   const genText=state.txGenerationMsEma>0?` · raster ${state.txGenerationMsEma.toFixed(0)}ms`:'';
   const queueText=!isAdaptiveMode()?` · queue ${state.txQueue.length}/${Math.max(1,state.txSlots*TX_LOOKAHEAD_PER_SLOT)} · miss ${state.txQueueMisses}`:'';
-  $('txFrame').textContent=`QCT2 · QR V${state.txLastItem.raster.version} ECC ${QR_ECC} · ${state.meta.visualStates} stati/${channels} canali · payload ${state.encoder.chunkSize} B · ${state.txSlots} QR · ${fpsText} · ~${theoretical.toFixed(1)} KiB/s teorici · ${actual} simboli/s${genText}${queueText}`;
+  const profile=state.meta.visualStates===2?'B/N':`${state.meta.visualStates} stati`;
+  $('txFrame').textContent=`QCT2 · QR V${state.txLastItem.raster.version} ECC ${QR_ECC} · ${profile}/${channels} ${channels===1?'canale':'canali'} · payload ${state.encoder.chunkSize} B · ${state.txSlots} QR · ${fpsText} · ~${theoretical.toFixed(1)} KiB/s teorici · ${actual} simboli/s${genText}${queueText}`;
   updateModeBadge();
 }
 
 function nextTxPackets(generation) {
   if(!state.encoder||generation!==state.txGeneration)return null;
-  const channels=state.meta.visualStates===8?3:2;
+  const channels=channelsForVisualStates(state.meta.visualStates);
   const symbolIds=Array.from({length:channels},(_,i)=>(state.symbolId+i)>>>0);state.symbolId=(state.symbolId+channels)>>>0;
   const symbols=symbolIds.map(id=>state.encoder.symbol(id));
   const packets=symbols.map((symbol,i)=>encodeOpticalPacketV2(state.meta,symbolIds[i],symbol.data));
@@ -148,7 +151,7 @@ function nextTxPackets(generation) {
 async function makeTxItemDirect(generation) {
   const prepared=nextTxPackets(generation);if(!prepared)return null;
   const started=performance.now();
-  const raster=prepared.packets.length===3?await createTripleQrRaster(...prepared.packets):await createDualQrRaster(...prepared.packets);
+  const raster=prepared.packets.length===3?await createTripleQrRaster(...prepared.packets):prepared.packets.length===2?await createDualQrRaster(...prepared.packets):await createQrRaster(prepared.packets[0]);
   const ms=performance.now()-started;state.txGenerationMsEma=state.txGenerationMsEma?state.txGenerationMsEma*0.85+ms*0.15:ms;
   if(generation!==state.txGeneration)return null;
   return {symbolIds:prepared.symbolIds,degrees:prepared.degrees,raster};
@@ -200,7 +203,7 @@ async function rebuildTxGrid(reason='layout') {
   const {width,height}=txStageBudget();state.txSlots=selectedGridCount(state.txRasterSize);const dims=gridDims(state.txSlots,width,height);state.txCols=dims.cols;state.txRows=dims.rows;
   state.txCells=new Array(state.txSlots).fill(null);state.txCellPaintedAt=new Array(state.txSlots).fill(0);state.txStaging=null;state.txCellCursor=0;
   ensureTxStaging();paintTxCell(0,first);
-  const channels=state.meta.visualStates===8?3:2;state.txSymbolsShown+=channels;
+  const channels=channelsForVisualStates(state.meta.visualStates);state.txSymbolsShown+=channels;
   for(let index=1;index<state.txSlots;index++){const item=await makeTxItemDirect(generation);if(!item||generation!==state.txGeneration)return;paintTxCell(index,item);state.txSymbolsShown+=channels;}
   resizeTxCanvas();
   log(`TX ${reason}: ${state.txSlots} QR (${state.txCols}x${state.txRows}) · ${$('gridMode').value==='auto'?'AUTO 4/6':'manuale'} · QCT2 · ${state.encoder.chunkSize} B/canale · V${state.txLastItem.raster.version}`);
@@ -216,7 +219,7 @@ async function configureSelectedFile(reason='configurazione') {
   const meta={protocolVersion:2,streamId,sourceCount:encoder.sourceCount,chunkSize:encoder.chunkSize,containerLength:container.length,visualStates};
   const probe=encodeOpticalPacketV2(meta,0,encoder.symbol(0).data);if(probe.length>CAPACITY_BYTES)throw new Error(`QCT2 ${probe.length} B supera il limite QR ${CAPACITY_BYTES} B`);
   state.encoder=encoder;state.meta=meta;state.symbolId=0;state.txSymbolsShown=0;state.txStartedAt=0;state.txGenerationMsEma=0;state.txQueue=[];state.txQueueMisses=0;
-  const modeLabel=isAdaptiveMode()?'4 stati ADAPTIVE':visualStates===8?'8 stati EXP':'4 stati HIGH THROUGHPUT';
+  const modeLabel=visualStates===2?'B/N BASELINE':isAdaptiveMode()?'4 stati ADAPTIVE':visualStates===8?'8 stati EXP':'4 stati HIGH THROUGHPUT';
   $('txFileInfo').textContent=`${name} · ${formatBytes(bytes.length)} · container ${formatBytes(container.length)} · K=${encoder.sourceCount} × ${encoder.chunkSize} B · ${modeLabel} · QCT2 ${HEADER_BYTES_V2} B header · SHA-256 nel container`;
   status('txStatus',`Pronto · ${chunkSize} B/canale · ${modeLabel} · AUTO sceglie 4/6 QR in base allo spazio fisico disponibile.`,'ok');
   log(`TX ${reason}: ${name}, file=${bytes.length}, container=${container.length}, K=${encoder.sourceCount}, payload=${chunkSize}, states=${visualStates}`);
@@ -226,8 +229,8 @@ async function prepareFile(file){const bytes=new Uint8Array(await file.arrayBuff
 
 async function txAdaptiveLoop(generation) {
   while(state.transmitting&&generation===state.txGeneration){const fps=selectedFps(),cellIndex=state.txCellCursor,started=performance.now();
-    try{const item=await makeTxItemDirect(generation);if(!item)break;const nextPaintAt=adaptiveNextPaintAt(state.txCellPaintedAt[cellIndex],fps);await sleep(Math.max(0,nextPaintAt-performance.now()));if(!state.transmitting||generation!==state.txGeneration)break;paintTxCell(cellIndex,item);state.txCellCursor=(cellIndex+1)%state.txSlots;state.txSymbolsShown+=state.meta.visualStates===8?3:2;}
-    catch(error){state.transmitting=false;status('txStatus',`Errore QR colore: ${error.message}`,'error');log(`TX QR error: ${error.stack||error.message}`);break;}
+    try{const item=await makeTxItemDirect(generation);if(!item)break;const nextPaintAt=adaptiveNextPaintAt(state.txCellPaintedAt[cellIndex],fps);await sleep(Math.max(0,nextPaintAt-performance.now()));if(!state.transmitting||generation!==state.txGeneration)break;paintTxCell(cellIndex,item);state.txCellCursor=(cellIndex+1)%state.txSlots;state.txSymbolsShown+=channelsForVisualStates(state.meta.visualStates);}
+    catch(error){state.transmitting=false;status('txStatus',`Errore QR: ${error.message}`,'error');log(`TX QR error: ${error.stack||error.message}`);break;}
     const spent=performance.now()-started;if(spent<1)await sleep(1);
   }
 }
@@ -241,7 +244,7 @@ function startHighThroughputLoop(generation) {
     if(now-lastTick>1000){log(`TX rAF stall ${(now-lastTick).toFixed(0)} ms`);nextAt=now;}lastTick=now;
     if(now<nextAt)return;if(now-nextAt>interval)nextAt=now;
     let flips=0;
-    while(now>=nextAt&&flips<state.txSlots){const item=state.txQueue.shift();if(!item){state.txQueueMisses++;nextAt=now+sub;break;}const cell=state.txCellCursor;paintTxCell(cell,item);state.txCellCursor=(cell+1)%state.txSlots;state.txSymbolsShown+=state.meta.visualStates===8?3:2;nextAt+=sub;flips++;pumpTxQueue(generation);}
+    while(now>=nextAt&&flips<state.txSlots){const item=state.txQueue.shift();if(!item){state.txQueueMisses++;nextAt=now+sub;break;}const cell=state.txCellCursor;paintTxCell(cell,item);state.txCellCursor=(cell+1)%state.txSlots;state.txSymbolsShown+=channelsForVisualStates(state.meta.visualStates);nextAt+=sub;flips++;pumpTxQueue(generation);}
   };
   state.txRaf=requestAnimationFrame(tick);
 }
@@ -249,17 +252,34 @@ function startTxScheduler(generation){if(isAdaptiveMode())void txAdaptiveLoop(ge
 function startTransmit() {
   if(!state.encoder||state.transmitting)return;
   state.transmitting=true;state.txStartedAt=performance.now();state.txSymbolsShown=0;const generation=++state.txGeneration;requestWakeLock();
-  const channels=state.meta.visualStates===8?3:2,requested=selectedFps(),optical=isAdaptiveMode()?adaptiveOpticalFpsCeiling(requested):requested;
+  const channels=channelsForVisualStates(state.meta.visualStates),requested=selectedFps(),optical=isAdaptiveMode()?adaptiveOpticalFpsCeiling(requested):requested;
   const theoretical=theoreticalFountainKiBs(state.encoder.chunkSize,optical,state.txSlots,channels);
   const schedulerText=isAdaptiveMode()?`ADAPTIVE · ${requested} fps target`:`LOOKAHEAD/rAF · ${requested} fps/QR`;
   status('txStatus',`Trasmissione attiva: QCT2 · ${schedulerText} · ${state.txSlots} QR · ${state.encoder.chunkSize} B/canale · ~${theoretical.toFixed(0)} KiB/s fountain teorici.`,'ok');
   log(`TX start · ${state.txSlots} QR · ${schedulerText} · ${channels} canali · ${state.encoder.chunkSize} B`);startTxScheduler(generation);
 }
 function stopTransmit(){state.transmitting=false;state.txGeneration++;if(state.txRaf)cancelAnimationFrame(state.txRaf);state.txRaf=0;state.txQueue=[];if(state.encoder)status('txStatus','Trasmissione in pausa. I QR visibili restano decodificabili.');releaseWakeLockIfIdle();}
-async function toggleFullscreenTx(){const stage=$('txStage');try{if(document.fullscreenElement)await document.exitFullscreen();else if(stage.requestFullscreen)await stage.requestFullscreen();else status('txStatus','Schermo intero non supportato; ruota il dispositivo per sfruttare la larghezza.','warn');}catch(error){status('txStatus',`Schermo intero non disponibile: ${error.message}`,'warn');}}
+async function resetTransmit(){
+  if(!state.selectedFile){status('txStatus','Seleziona prima un file da trasmettere.','warn');return;}
+  const restart=state.transmitting;await configureSelectedFile('reset TX');if(restart)startTransmit();
+}
+function setTxImmersiveFallback(active){const shell=$('txFullscreenShell');shell.classList.toggle('immersive-fallback',active);document.body.classList.toggle('tx-immersive',active);}
+function txFullscreenActive(){return document.fullscreenElement===$('txFullscreenShell')||$('txFullscreenShell').classList.contains('immersive-fallback');}
+async function exitFullscreenTx(){
+  try{if(document.fullscreenElement)await document.exitFullscreen();}catch(error){log(`Uscita fullscreen: ${error.message}`);}finally{setTxImmersiveFallback(false);scheduleTxDisplayRefresh();}
+}
+async function toggleFullscreenTx(){
+  if(txFullscreenActive()){await exitFullscreenTx();return;}
+  const shell=$('txFullscreenShell');
+  if(shell.requestFullscreen){
+    try{try{await shell.requestFullscreen({navigationUI:'hide'});}catch{await shell.requestFullscreen();}scheduleTxDisplayRefresh();return;}
+    catch(error){log(`Fullscreen nativo non disponibile: ${error.message}; uso modalità immersiva.`);}
+  }
+  setTxImmersiveFallback(true);scheduleTxDisplayRefresh();
+}
 let resizeTimer=null;
 function scheduleTxDisplayRefresh(){clearTimeout(resizeTimer);resizeTimer=setTimeout(async()=>{if(!state.encoder)return;if($('gridMode').value==='auto'&&selectedGridCount()!==state.txSlots)await rebuildTxGrid('ridimensionamento');else resizeTxCanvas();},180);}
-async function settingsChanged(kind){updateModeBadge();if(!state.selectedFile)return;if(kind==='payload'||kind==='color')await configureSelectedFile(kind==='payload'?'payload modificato':'profilo colore modificato');else if(selectedGridCount()!==state.txSlots)await rebuildTxGrid(`${kind} modificato`);else updateTxMeta();}
+async function settingsChanged(kind){updateModeBadge();if(!state.selectedFile)return;if(kind==='payload'||kind==='color')await configureSelectedFile(kind==='payload'?'payload modificato':'profilo ottico modificato');else if(selectedGridCount()!==state.txSlots)await rebuildTxGrid(`${kind} modificato`);else updateTxMeta();}
 
 // ---- RX ROI + worker pool ---------------------------------------------------
 function desiredRxWorkerCount(){return workerCountForHardware(navigator.hardwareConcurrency);}
@@ -290,7 +310,7 @@ function ensureWorkers(){
     state.workers.push(worker);state.workerBusy.push(false);state.workerTasks.push(null);
   }
 }
-function submitWorkerImage(workerIndex,image,task){const id=state.frameId++;state.workerBusy[workerIndex]=true;state.workerTasks[workerIndex]=task;state.workers[workerIndex].postMessage({id,buf:image.data.buffer,w:image.width,h:image.height,mode:task.mode,regionId:task.regionId??null,originX:task.originX||0,originY:task.originY||0,decodeColor:task.mode==='crop'},[image.data.buffer]);}
+function submitWorkerImage(workerIndex,image,task){const id=state.frameId++;state.workerBusy[workerIndex]=true;state.workerTasks[workerIndex]=task;const decodeColor=task.mode==='crop'&&state.rxMeta?.visualStates!==2;state.workers[workerIndex].postMessage({id,buf:image.data.buffer,w:image.width,h:image.height,mode:task.mode,regionId:task.regionId??null,originX:task.originX||0,originY:task.originY||0,decodeColor},[image.data.buffer]);}
 
 async function tuneCameraTrack(track){try{const caps=track?.getCapabilities?.();if(caps?.focusMode?.includes?.('continuous'))await track.applyConstraints({advanced:[{focusMode:'continuous'}]});}catch(error){log(`Focus continuo non applicato: ${error.message}`);}}
 async function getCameraStream(){const base={facingMode:{ideal:'environment'},width:{ideal:RX_CAPTURE_WIDTH},height:{ideal:Math.round(RX_CAPTURE_WIDTH*3/4)}};try{return await navigator.mediaDevices.getUserMedia({audio:false,video:{...base,frameRate:{exact:RX_CAPTURE_FPS_TARGET}}});}catch(firstError){log(`Camera ${RX_CAPTURE_FPS_TARGET} fps exact non disponibile: ${firstError.message}`);try{return await navigator.mediaDevices.getUserMedia({audio:false,video:{...base,frameRate:{exact:RX_CAPTURE_FPS_FALLBACK}}});}catch{return navigator.mediaDevices.getUserMedia({audio:false,video:{...base,frameRate:{ideal:RX_CAPTURE_FPS_TARGET}}});}}}
@@ -334,9 +354,10 @@ async function runSelfTest(){
     const p0=encodeOpticalPacketV2(meta,0,enc.symbol(0).data),p1=encodeOpticalPacketV2(meta,1,enc.symbol(1).data);if(p0.length!==CAPACITY_BYTES)throw new Error(`QCT2 MAX inatteso: ${p0.length}`);
     const decoded=decodeOpticalPacket(p0);if(decoded.protocolVersion!==2||decoded.chunkSize!==MAX_HIGH_THROUGHPUT_CHUNK)throw new Error('QCT2 decode non coerente');
     const dual=await createDualQrRaster(p0,p1);if(dual.visualStates!==4||dual.channels!==2)throw new Error('dual color non attivo');
+    const monoMeta={...meta,visualStates:2},monoPacket=encodeOpticalPacketV2(monoMeta,2,enc.symbol(2).data),monoDecoded=decodeOpticalPacket(monoPacket),mono=await createQrRaster(monoPacket);if(monoDecoded.visualStates!==2||mono.channels!==1||mono.visualStates!==2)throw new Error('baseline B/N non attiva');
     const legacyMeta={streamId:1,sourceCount:1,chunkSize:32,fileLength:3,fileName:'x',sha256:null,visualStates:4};if(decodeOpticalPacket(encodeOpticalPacket(legacyMeta,0,new Uint8Array(32))).protocolVersion!==1)throw new Error('QCT1 compatibility persa');
     const roi=new RoiTracker();roi.observe([{x:20,y:20,w:100,h:100,decoded:true}],0);if(roi.regions.length!==1||workerCountForHardware(4)!==4)throw new Error('ROI/worker pool non coerente');
-    status('selfTest',`Autotest: OK · QCT2 ${MAX_HIGH_THROUGHPUT_CHUNK} B/canale · QR V${dual.version} · 4 stati/2 canali · AUTO 4/6 · RX fino a 6 worker.`,'ok');log(`Autotest v2 OK · QR V${dual.version}, ${dual.modules} moduli, packet ${p0.length} B`);
+    status('selfTest',`Autotest: OK · QCT2 ${MAX_HIGH_THROUGHPUT_CHUNK} B/canale · QR V${dual.version} · B/N 1 canale + 4 stati/2 canali · AUTO 4/6 · RX fino a 6 worker.`,'ok');log(`Autotest v2.2 OK · QR V${dual.version}, ${dual.modules} moduli, packet ${p0.length} B`);
   }catch(error){status('selfTest',`Autotest: ERRORE · ${error.message}`,'error');log(`Autotest FAIL: ${error.stack||error.message}`);}
 }
 function updateNetworkState(){$('netState').textContent=navigator.onLine?'rete: online':'rete: offline';}
@@ -344,10 +365,11 @@ async function setupPwa(){updateNetworkState();window.addEventListener('online',
 
 $('fileInput').addEventListener('change',event=>{const file=event.target.files?.[0];if(file)prepareFile(file).catch(error=>{status('txStatus',error.message,'error');log(`TX prepare error: ${error.stack||error.message}`);});});
 $('startTx').addEventListener('click',startTransmit);$('stopTx').addEventListener('click',stopTransmit);$('fullTx').addEventListener('click',toggleFullscreenTx);
+$('fsStartTx').addEventListener('click',startTransmit);$('fsStopTx').addEventListener('click',stopTransmit);$('fsResetTx').addEventListener('click',()=>{void resetTransmit();});$('fsExitTx').addEventListener('click',()=>{void exitFullscreenTx();});
 $('gridMode').addEventListener('change',()=>{void settingsChanged('griglia');});$('fps').addEventListener('change',()=>{void settingsChanged('fps');});$('payloadBytes').addEventListener('change',()=>{void settingsChanged('payload');});$('colorMode').addEventListener('change',()=>{void settingsChanged('color');});
 $('startRx').addEventListener('click',startCamera);$('stopRx').addEventListener('click',stopCamera);$('resetRx').addEventListener('click',resetReceiver);
-window.addEventListener('resize',scheduleTxDisplayRefresh);window.addEventListener('orientationchange',scheduleTxDisplayRefresh);document.addEventListener('fullscreenchange',scheduleTxDisplayRefresh);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&(state.transmitting||state.receiving))requestWakeLock();});
-window.addEventListener('beforeunload',()=>{stopTransmit();stopCamera();terminateTxWorkers();terminateWorkers();if(state.downloadUrl)URL.revokeObjectURL(state.downloadUrl);});
+window.addEventListener('resize',scheduleTxDisplayRefresh);window.addEventListener('orientationchange',scheduleTxDisplayRefresh);document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement)setTxImmersiveFallback(false);scheduleTxDisplayRefresh();});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&(state.transmitting||state.receiving))requestWakeLock();});
+window.addEventListener('beforeunload',()=>{stopTransmit();stopCamera();setTxImmersiveFallback(false);terminateTxWorkers();terminateWorkers();if(state.downloadUrl)URL.revokeObjectURL(state.downloadUrl);});
 
-$('capacity').textContent=`QCT2 · fino a ${MAX_HIGH_THROUGHPUT_CHUNK} B/canale · AUTO 4/6 QR · TX 60 fps max · RX 1280@60 / 2–6 worker`;
+$('capacity').textContent=`QCT2 · B/N 1 canale o qcolor · fino a ${MAX_HIGH_THROUGHPUT_CHUNK} B/canale · AUTO 4/6 QR · TX 60 fps max · RX 1280@60 / 2–6 worker`;
 updateModeBadge();resetReceiver();setupPwa();void runSelfTest();
