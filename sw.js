@@ -1,8 +1,8 @@
-const CACHE = 'qcolortrasfer-v2.2.0-mono-fullscreen';
+const CACHE = 'qcolortrasfer-v2.2.1-ios-optical-overlay';
 const CORE = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
-  './js/ui-shell.js', './js/app.js', './js/crc32.js', './js/fountain.js', './js/protocol.js',
+  './js/ui-shell.js', './js/tx-optical-view.js', './js/app.js', './js/crc32.js', './js/fountain.js', './js/protocol.js',
   './js/optical.js', './js/color-code.js', './js/adaptive-scheduler.js',
   './js/high-throughput.js', './js/tx-worker.js', './js/rx-roi.js', './js/qr-worker.js'
 ];
