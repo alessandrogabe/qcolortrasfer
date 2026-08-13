@@ -8,15 +8,20 @@
 export const ROI_MAX_REGIONS = 9;
 export const ROI_TTL_MS = 1600;
 export const ROI_ACQUIRE_SCAN_MS = 100;
+export const ROI_WARM_SCAN_MS = 180;
+export const ROI_WARMUP_MS = 2800;
 export const ROI_DEGRADED_SCAN_MS = 250;
 export const ROI_LOCKED_SCAN_MS = 1500;
 export const ROI_PAD_RATIO = 0.30;
 export const ROI_MIN_PAD_PX = 12;
 
-// The decoder is the workload: use the logical cores the browser exposes, up
-// to six workers because v2 AUTO shows 4 or 6 physical codes. This deliberately
-// differs from v1.6, where a 4-core iPhone was artificially limited to 2.
+// hardwareConcurrency is only a browser hint and on iOS/Android may be privacy-
+// capped below the number of useful logical execution resources. Production can
+// temporarily set __QCOLOR_RX_WORKER_TARGET during START RX; the unit/self-test
+// path remains deterministic when no override is present.
 export function workerCountForHardware(hardwareConcurrency) {
+  const override = Math.floor(Number(globalThis.__QCOLOR_RX_WORKER_TARGET));
+  if (Number.isFinite(override) && override > 0) return Math.max(2, Math.min(6, override));
   const hc = Math.max(1, Math.floor(Number(hardwareConcurrency) || 4));
   return Math.max(2, Math.min(6, hc));
 }
@@ -72,6 +77,7 @@ export class RoiTracker {
     this.nextId = 1;
     this.peakRegions = 0;
     this.lastFullScanAt = -Infinity;
+    this.firstConfirmedAt = null;
   }
   prune(now) {
     this.regions = this.regions.filter(region => region.inFlight || now - region.lastSeen <= ROI_TTL_MS);
@@ -105,6 +111,7 @@ export class RoiTracker {
           match.h = match.h * keep + detection.h * fresh;
           match.confirmed = true;
           match.hits++;
+          if (this.firstConfirmedAt == null) this.firstConfirmedAt = now;
         }
         continue;
       }
@@ -119,6 +126,7 @@ export class RoiTracker {
         id: this.nextId++, x: detection.x, y: detection.y, w: detection.w, h: detection.h,
         lastSeen: now, lastSubmitted: -Infinity, inFlight: false, hits: decoded ? 1 : 0, confirmed: decoded
       });
+      if (decoded && this.firstConfirmedAt == null) this.firstConfirmedAt = now;
     }
 
     if (this.regions.length > ROI_MAX_REGIONS) {
@@ -132,7 +140,10 @@ export class RoiTracker {
   shouldFullScan(now) {
     this.prune(now);
     const confirmed = this.confirmedCount();
-    const interval = confirmed === 0 ? ROI_ACQUIRE_SCAN_MS : confirmed < this.peakRegions ? ROI_DEGRADED_SCAN_MS : ROI_LOCKED_SCAN_MS;
+    let interval;
+    if (confirmed === 0) interval = ROI_ACQUIRE_SCAN_MS;
+    else if (this.firstConfirmedAt != null && now - this.firstConfirmedAt < ROI_WARMUP_MS) interval = ROI_WARM_SCAN_MS;
+    else interval = confirmed < this.peakRegions ? ROI_DEGRADED_SCAN_MS : ROI_LOCKED_SCAN_MS;
     return now - this.lastFullScanAt >= interval;
   }
   noteFullScan(now) { this.lastFullScanAt = now; }
