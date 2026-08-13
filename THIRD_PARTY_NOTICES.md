@@ -7,21 +7,23 @@ Repository: https://github.com/bashalarmistalt/decimen-optical-transfer
 
 MIT License — Copyright (c) 2026 Evan Crawley (Bash Alarmist).
 
-qcolortrasfer adotta deliberatamente dalla release MIT v0.3.0 i principi di QR standard, fountain stream, acquisizione camera full-frame e decodifica ZXing-WASM in worker. Il robust-soliton LT di qcolortrasfer è adattato da quella release. Le release Decimen >= v0.4.0 sono AGPL e non sono sorgente per questo progetto MIT.
+qcolortrasfer adotta deliberatamente dalla release MIT v0.3.0 i principi di QR standard, fountain stream, acquisizione camera e decodifica ZXing-WASM in worker. Il robust-soliton LT di qcolortrasfer è adattato da quella release.
 
-La modulazione dual-QR a 4 colori, la ricostruzione del secondo QR da crominanza e la griglia qcolortrasfer sono estensioni di questo progetto.
+Le release Decimen >= v0.4.0 sono AGPL. Possono essere citate nella documentazione per benchmark pubblici o per confrontare principi architetturali generali, ma **nessun loro sorgente viene copiato o adattato** nel progetto MIT. Il tracker ROI/crop e il relativo scheduler di qcolortrasfer sono implementazioni originali di questo progetto.
+
+La modulazione dual-QR a 4 colori, la ricostruzione dei QR da crominanza, la griglia qcolortrasfer e il tracker RX ROI sono estensioni qcolortrasfer.
 
 ## qrcode 1.5.4
 Repository: https://github.com/soldair/node-qrcode
 License: MIT.
 
-Usato per generare entrambi i QR standard in byte mode. qcolortrasfer usa anche la matrice `reservedBit`/`isReserved` della versione fissata 1.5.4 per lasciare B/W puro il pattern funzionale del QR.
+Usato per generare i QR standard in byte mode. qcolortrasfer usa anche la matrice `reservedBit`/`isReserved` della versione fissata 1.5.4 per lasciare B/W puro il pattern funzionale del QR.
 
 ## zxing-wasm 2.0.0
 Repository: https://github.com/Sec-ant/zxing-wasm
 License wrapper: MIT.
 
-Usato per eseguire il decoder ZXing in WebAssembly nel browser sia sul QR base acquisito dalla camera sia sul QR cromatico ricostruito.
+Usato per eseguire il decoder ZXing in WebAssembly nel browser sia sul QR base acquisito dalla camera sia sui QR cromatici ricostruiti.
 
 ### ZXing-C++
 Repository: https://github.com/zxing-cpp/zxing-cpp
