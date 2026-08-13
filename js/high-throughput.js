@@ -6,18 +6,13 @@
 // receiver that is allowed to miss symbols because the fountain code repairs
 // erasures. No Decimen >=0.4 source is incorporated here.
 
-export const QR_MAX_PACKET_BYTES = 2953; // QR V40-L byte-mode ceiling used by qcolortrasfer.
+export const QR_MAX_PACKET_BYTES = 2953;
 export const QCT2_HEADER_BYTES = 24;
 export const QCT2_CRC_BYTES = 4;
-export const MAX_HIGH_THROUGHPUT_CHUNK = QR_MAX_PACKET_BYTES - QCT2_HEADER_BYTES - QCT2_CRC_BYTES; // 2925 B
-
+export const MAX_HIGH_THROUGHPUT_CHUNK = QR_MAX_PACKET_BYTES - QCT2_HEADER_BYTES - QCT2_CRC_BYTES;
 export const TX_LOOKAHEAD_PER_SLOT = 3;
 export const TX_MIN_AUTO_CODES = 4;
 export const TX_MAX_AUTO_CODES = 6;
-
-// AUTO is based on the physical pixels available to each QR raster cell. B/N
-// tolerates a little less sampling density; chromatic modes need more pixels so
-// that demosaicing/display sub-pixels do not collapse the chroma classification.
 export const TX_MIN_DEVICE_PX_MONO = 3.1;
 export const TX_MIN_DEVICE_PX_COLOR = 3.8;
 export const TX_MAX_EFFECTIVE_DPR = 4;
@@ -46,7 +41,7 @@ export function minDevicePxForVisualStates(visualStates = 2) {
 
 function inferredVisualStates() {
   const mode = globalThis.document?.getElementById?.('colorMode')?.value;
-  if (!mode) return 2; // deterministic non-DOM/test default
+  if (!mode) return 2;
   return mode === 'bw' ? 2 : mode === '8' ? 8 : 4;
 }
 
@@ -56,14 +51,9 @@ export function devicePixelsPerRasterCell(count, widthCss, heightCss, dpr, raste
   return (sideCss * effectiveDisplayDpr(dpr)) / Math.max(1, rasterSize);
 }
 
-// Production AUTO is intentionally 4-or-6 only. Six is selected only when a
-// physical V40 raster cell remains large enough for the active optical profile;
-// otherwise four larger QR win. `minPx` can be pinned by tests/experiments. In
-// the browser, when omitted, it follows the selected B/N or chromatic profile.
 export function chooseHighThroughputGrid(widthCss, heightCss, dpr, rasterSize, minPx = null) {
-  const threshold = Number.isFinite(Number(minPx))
-    ? Number(minPx)
-    : minDevicePxForVisualStates(inferredVisualStates());
+  const hasExplicitThreshold = minPx != null && Number.isFinite(Number(minPx));
+  const threshold = hasExplicitThreshold ? Number(minPx) : minDevicePxForVisualStates(inferredVisualStates());
   const sixPx = devicePixelsPerRasterCell(6, widthCss, heightCss, dpr, rasterSize);
   return sixPx >= threshold ? 6 : 4;
 }
