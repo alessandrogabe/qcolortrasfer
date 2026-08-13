@@ -1,9 +1,10 @@
-const CACHE = 'qcolortrasfer-v1.0.1-camera-finder';
+const CACHE = 'qcolortrasfer-v1.1.0-decimen-qr-baseline';
 const CORE = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
-  './js/app.js', './js/crc32.js', './js/fountain.js', './js/protocol.js', './js/optical.js'
+  './js/app.js', './js/crc32.js', './js/fountain.js', './js/protocol.js', './js/optical.js', './js/qr-worker.js'
 ];
+const EXTERNAL = new Set(['https://esm.sh', 'https://cdn.jsdelivr.net']);
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(CORE)).then(() => self.skipWaiting()));
@@ -21,19 +22,33 @@ self.addEventListener('fetch', event => {
   const request = event.request;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
+
+  if (EXTERNAL.has(url.origin)) {
+    event.respondWith(caches.open(CACHE).then(async cache => {
+      const cached = await cache.match(request);
+      try {
+        const response = await fetch(request);
+        if (response.ok) await cache.put(request, response.clone());
+        return response;
+      } catch {
+        return cached || Response.error();
+      }
+    }));
+    return;
+  }
+
   if (url.origin !== self.location.origin) return;
 
   if (request.mode === 'navigate') {
     event.respondWith(fetch(request).then(response => {
-      const copy = response.clone();
-      caches.open(CACHE).then(cache => cache.put('./index.html', copy));
+      caches.open(CACHE).then(cache => cache.put('./index.html', response.clone()));
       return response;
     }).catch(() => caches.match('./index.html')));
     return;
   }
 
-  const isRuntimeCode = /\/(js\/|sw\.js$)/.test(url.pathname);
-  if (isRuntimeCode) {
+  const runtimeCode = /\/(js\/|sw\.js$)/.test(url.pathname);
+  if (runtimeCode) {
     event.respondWith(fetch(request).then(response => {
       if (response.ok) caches.open(CACHE).then(cache => cache.put(request, response.clone()));
       return response;
@@ -41,11 +56,8 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  event.respondWith(caches.match(request).then(cached => {
-    if (cached) return cached;
-    return fetch(request).then(response => {
-      if (response.ok) caches.open(CACHE).then(cache => cache.put(request, response.clone()));
-      return response;
-    });
-  }));
+  event.respondWith(caches.match(request).then(cached => cached || fetch(request).then(response => {
+    if (response.ok) caches.open(CACHE).then(cache => cache.put(request, response.clone()));
+    return response;
+  })));
 });
