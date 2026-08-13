@@ -2,49 +2,73 @@
 
 PWA open source MIT per trasferire file direttamente dallo schermo di un dispositivo alla fotocamera di un altro, senza Wi‑Fi, Bluetooth, account o backend dati.
 
-## v1.5 beta: 4 stati ADAPTIVE
+## v1.6 beta: RX ROI / crop tracking
 
 La baseline affidabile resta un QR standard letto da ZXing. qcolortrasfer sovrappone informazioni cromatiche ai soli moduli dati/ECC, lasciando finder/timing/alignment e moduli funzione in bianco/nero puro.
 
-Modalità disponibili:
+Modalità TX disponibili:
 
-- **4 stati / 2 canali STABILE:** il profilo già verificato fisicamente. Luminanza + 1 bit cromatico = 2 QR logici nello stesso quadrato.
-- **4 stati / 2 canali ADAPTIVE:** stesso identico encoding ottico del profilo stabile, ma con scheduler TX observation-aware. È il nuovo default.
-- **8 stati / 3 canali EXP:** luminanza + 2 assi cromatici = 3 QR logici nello stesso quadrato. Resta disponibile per confronto sperimentale.
+- **4 stati / 2 canali STABILE — default:** profilo fisicamente verificato e, nei test reali del progetto, più veloce di ADAPTIVE.
+- **4 stati / 2 canali ADAPTIVE:** stesso encoding ottico, scheduler TX con dwell minimo; resta disponibile come fallback sperimentale per coppie di dispositivi che ne beneficiano.
+- **8 stati / 3 canali EXP:** luminanza + 2 assi cromatici = 3 QR logici nello stesso quadrato; resta sperimentale.
 
-Ogni canale cromatico viene ricostruito come un vero QR e passato nuovamente a ZXing, quindi conserva ECC QR. Payload selezionabile: **512 / 768 / 1024 / 1280 byte** per simbolo fountain; default 1024 B. Target velocità: **3 / 5 / 8 / 12 / 20 fps per QR**. Griglia: 1 / 2 / 4 / 6 QR.
+Payload selezionabile: **512 / 768 / 1024 / 1280 byte** per simbolo fountain; default 1024 B. Target TX: **3 / 5 / 8 / 12 / 20 fps per QR**. Griglia: 1 / 2 / 4 / 6 QR.
 
 ```text
 FILE → SHA-256/QCT1 → LT robust-soliton → QR base + C1 [+ C2] → CAMERA
-     → ZXing base → rettifica cromatica → ZXing C1/C2 → LT peeling → SHA-256 → FILE
+     → acquisizione full-frame → tracking ROI → crop paralleli
+     → ZXing base + crominanza C1/C2 → LT peeling → SHA-256 → FILE
 ```
 
-## Come funziona ADAPTIVE
+## Perché RX ROI
 
-qcolortrasfer è un collegamento ottico **unidirezionale**: il trasmettitore non riceve telemetria dalla fotocamera remota. Il termine ADAPTIVE indica quindi adattamento lato trasmettitore, non un feedback channel nascosto.
+La versione precedente passava l'intero frame della fotocamera a ZXing quasi a ogni frame. Con più QR sullo schermo questo spreca gran parte del lavoro su pixel che non appartengono ad alcun codice.
 
-Il problema che risolve è semplice: nella modalità tradizionale il tempo necessario a generare un QR molto denso può consumare parte della finestra durante la quale quel QR dovrebbe restare stabile sul display. ADAPTIVE separa le due cose:
+La v1.6 separa **acquisizione** e **tracking**:
 
-1. il prossimo QR viene generato in background mentre il QR corrente resta visibile;
-2. ogni posizione della griglia conserva un timestamp dell'ultimo repaint;
-3. il nuovo QR viene dipinto soltanto quando quella specifica posizione ha rispettato il dwell minimo;
-4. il dwell vale `max(1000/fps_target, 75 ms)`; 75 ms corrispondono a circa **2,25 frame di una camera da 30 fps**;
-5. a 20 fps target ADAPTIVE non forza quindi la stessa cella a cambiare ogni 50 ms: il ceiling ottico è circa 13,3 fps/QR, mentre il costo reale di generazione può abbassarlo ulteriormente;
-6. AUTO mantiene fino a 6 QR nel profilo ADAPTIVE fino a 12 fps target e passa a 4 QR a 20 fps. La griglia manuale resta sempre libera.
+1. un full scan trova i QR QCT1 e restituisce le loro coordinate;
+2. le coordinate vengono fuse in regioni persistenti con TTL breve;
+3. nei frame successivi il main thread estrae piccoli crop attorno alle regioni note;
+4. ogni regione può essere in-flight su un solo worker, così più worker non decodificano inutilmente lo stesso QR;
+5. i crop vengono distribuiti su **2–4 worker** in base a `navigator.hardwareConcurrency`;
+6. un full scan periodico riacquisisce QR mossi, nascosti o persi;
+7. quando il numero di regioni scende sotto il massimo osservato, il full scan accelera temporaneamente;
+8. i full scan saltano la ricostruzione cromatica per liberare prima il worker; C1/C2 vengono recuperati sui crop, che sono molto più piccoli.
 
-Questo scheduler non cambia QCT1, fountain code o decoder: un ricevitore vede semplicemente QR più stabili e non deve sapere se il trasmettitore sta usando STABILE o ADAPTIVE.
+Il tracker è una implementazione originale qcolortrasfer/MIT. Le release Decimen >=0.4 sono AGPL: nessun loro sorgente è copiato o adattato. L'idea generale di usare localizzazione + crop è trattata come principio architetturale, non come sorgente.
 
-## Ricezione e diagnostica
+## Worker pool e camera
 
-La diagnostica separa base, C1 e C2, mostra separazione cromatica, simboli distinti/duplicati, frame saltati e goodput fountain in KiB/s. Sul TX vengono mostrati anche target fps, ceiling ottico ADAPTIVE e tempo medio di generazione QR. A completamento viene mostrato il goodput effettivo del file. La finalizzazione è atomica: SHA-256, download e log `RX completo` vengono eseguiti una sola volta anche con più worker ancora in volo.
+Il pool sceglie automaticamente:
+
+- 2 worker fino a 5 CPU logiche;
+- 3 worker da 6–7;
+- 4 worker da 8 in su.
+
+La camera prova prima **60 fps exact** con risoluzione ideale 1920×1080, poi ricade a 30 fps exact e infine a 60 fps ideal. Se il browser espone `focusMode=continuous`, viene richiesto il focus continuo. La UI mostra la modalità effettivamente ottenuta.
+
+## Diagnostica RX
+
+Oltre a base/C1/C2, simboli distinti/duplicati e goodput, la UI mostra:
+
+- `ROI attive / picco`;
+- `crop hit / crop inviati`;
+- numero di full scan;
+- worker occupati / worker totali;
+- frame camera arrivati mentre tutti i worker erano saturi;
+- stato del peeling fountain.
+
+A completamento viene mostrato il goodput effettivo del file. La finalizzazione resta atomica: SHA-256, download e log `RX completo` vengono eseguiti una sola volta.
 
 ## Fountain
 
-Il robust-soliton LT è adattato da Decimen Optical Transfer v0.3.0 (MIT), con attribuzione a Evan Crawley / Bash Alarmist. I frame possono mancare, arrivare fuori ordine o essere riletti: la perdita rallenta il trasferimento ma non crea un “frame obbligatorio” mancante.
+Il robust-soliton LT è adattato da Decimen Optical Transfer v0.3.0 (MIT), con attribuzione a Evan Crawley / Bash Alarmist. I frame possono mancare, arrivare fuori ordine o essere riletti: la perdita rallenta il trasferimento ma non crea un frame obbligatorio mancante.
 
 ## Test
 
-`npm test` / `npm run check` includono anche test deterministici dello scheduler ADAPTIVE: dwell a 5/8/20 fps, ceiling ottico, cap AUTO e deadline di repaint. Restano i test precedenti su fountain, perdita simulata, ordine arbitrario, duplicati, QCT1/CRC/SHA, griglia, palette 4/8 stati e PWA. Il canale fisico display→camera resta necessariamente una verifica reale sui dispositivi.
+`npm test` / `npm run check` includono i test precedenti e i nuovi test puri del tracker ROI: conversione coordinate ZXing→frame, matching/IoU, padding crop, deduplica regioni, scheduling full-scan acquisition/degraded/locked e dimensionamento 2–4 worker.
+
+Il canale fisico display→camera richiede comunque una prova reale sui dispositivi: il benchmark importante resta il `KiB/s file` finale.
 
 ## GitHub Pages
 
