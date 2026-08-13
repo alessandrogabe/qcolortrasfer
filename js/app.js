@@ -1,22 +1,28 @@
 import { FountainEncoder, FountainDecoder } from './fountain.js';
 import { encodeOpticalPacket, decodeOpticalPacket, randomStreamId, sha256Hex } from './protocol.js';
-import { renderFrame, decodeFrameFromCanvas, CAPACITY_BYTES, ANALYSIS_SIZE } from './optical.js';
+import { renderFrame, CAPACITY_BYTES, QR_ECC } from './optical.js';
 
 const $ = id => document.getElementById(id);
+const RX_WORKERS = 2;
+const RX_CAPTURE_WIDTH = 1280;
+const RX_CAPTURE_FPS = 30;
+
 const state = {
-  encoder: null, meta: null, symbolId: 0, timer: null, txFrames: 0, txStartedAt: 0,
-  receiving: false, stream: null, track: null,
-  rxDecoder: null, rxMeta: null, rxFrames: 0, rxBad: 0, rxLastSymbol: -1, rxStartedAt: 0,
-  rxGeometry: null, rxErrors: { FINDER: 0, COLOR: 0, CRC: 0, PROTOCOL: 0 }, rxLastError: '—',
-  expectedHash: null, downloadUrl: null, wakeLock: null, installPrompt: null
+  encoder: null, meta: null, symbolId: 0, txGeneration: 0, transmitting: false, txFrames: 0, txStartedAt: 0,
+  receiving: false, stream: null, track: null, captureGeneration: 0, captureCanvas: null,
+  workers: [], workerBusy: [], workerCursor: 0, frameId: 0,
+  rxCaptured: 0, rxDroppedBusy: 0, rxQrDecoded: 0, rxPacketRejected: 0, rxWorkerErrors: 0,
+  rxDecoder: null, rxMeta: null, rxFrames: 0, rxLastSymbol: -1, rxStartedAt: 0,
+  expectedHash: null, downloadUrl: null, wakeLock: null, installPrompt: null,
 };
 
 function log(message) {
-  const line = `${new Date().toLocaleTimeString()}  ${message}`;
   const el = $('log');
-  el.textContent = `${line}\n${el.textContent}`.slice(0, 16000);
+  if (!el) return;
+  const line = `${new Date().toLocaleTimeString()}  ${message}`;
+  el.textContent = `${line}\n${el.textContent}`.slice(0, 18000);
 }
-function status(id, text, kind = '') { const el = $(id); el.textContent = text; el.dataset.kind = kind; }
+function status(id, text, kind = '') { const el = $(id); if (el) { el.textContent = text; el.dataset.kind = kind; } }
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   const units = ['KiB', 'MiB', 'GiB']; let value = bytes, unit = -1;
@@ -27,30 +33,6 @@ function compatiblePacket(a, b) {
   return a.streamId === b.streamId && a.sourceCount === b.sourceCount && a.chunkSize === b.chunkSize
     && a.fileLength === b.fileLength && a.sha256 === b.sha256;
 }
-function resetRxErrors() {
-  state.rxErrors = { FINDER: 0, COLOR: 0, CRC: 0, PROTOCOL: 0 };
-  state.rxLastError = '—';
-}
-function classifyRxError(error) {
-  if (error?.code === 'FINDER') return 'FINDER';
-  if (error?.code === 'COLOR') return 'COLOR';
-  if (/CRC mismatch/i.test(error?.message || '')) return 'CRC';
-  return 'PROTOCOL';
-}
-function recordRxError(error) {
-  const kind = classifyRxError(error);
-  state.rxErrors[kind]++;
-  state.rxLastError = `${kind}: ${error?.message || 'errore sconosciuto'}`;
-  state.rxBad++;
-  if (state.rxBad <= 3 || state.rxBad % 12 === 0) log(`RX scarto ${state.rxBad} · ${state.rxLastError}`);
-}
-function renderRxStats(extra = '') {
-  const solved = state.rxDecoder?.solvedCount || 0;
-  const total = state.rxDecoder?.sourceCount || 0;
-  const e = state.rxErrors;
-  $('rxStats').textContent = `${state.rxFrames} simboli validi · ${state.rxBad} scarti · ${solved}/${total || '—'} blocchi · finder ${e.FINDER} · colore ${e.COLOR} · CRC ${e.CRC} · protocollo ${e.PROTOCOL}${extra ? ` · ${extra}` : ''}`;
-}
-
 async function requestWakeLock() {
   if (!('wakeLock' in navigator) || state.wakeLock) return;
   try {
@@ -59,7 +41,7 @@ async function requestWakeLock() {
   } catch (error) { log(`Wake lock non disponibile: ${error.message}`); }
 }
 async function releaseWakeLockIfIdle() {
-  if (state.timer || state.receiving || !state.wakeLock) return;
+  if (state.transmitting || state.receiving || !state.wakeLock) return;
   try { await state.wakeLock.release(); } catch {}
   state.wakeLock = null;
 }
@@ -70,49 +52,63 @@ async function prepareFile(file) {
   const hash = await sha256Hex(bytes);
   const encoder = new FountainEncoder(bytes, 320);
   const packetSize = 96 + encoder.chunkSize + 4;
-  if (packetSize > CAPACITY_BYTES) throw new Error('La configurazione del protocollo supera la capacità del frame ottico.');
+  if (packetSize > CAPACITY_BYTES) throw new Error('Il pacchetto QCT1 supera la capacità QR configurata.');
   state.encoder = encoder; state.symbolId = 0; state.txFrames = 0;
   state.meta = { streamId: randomStreamId(), sourceCount: encoder.sourceCount, chunkSize: encoder.chunkSize, fileLength: bytes.length, fileName: file.name, sha256: hash };
-  $('txFileInfo').textContent = `${file.name} · ${formatBytes(bytes.length)} · ${encoder.sourceCount} blocchi sorgente · SHA-256 ${hash ? 'OK' : 'non disponibile'}`;
-  const memoryWarning = bytes.length > 50 * 1024 * 1024 ? ' File grande: la PWA lo mantiene in memoria durante il trasferimento.' : '';
-  status('txStatus', `Pronto. ${encoder.sourceCount} blocchi da ${encoder.chunkSize} B.${memoryWarning}`, 'ok');
+  $('txFileInfo').textContent = `${file.name} · ${formatBytes(bytes.length)} · ${encoder.sourceCount} blocchi × ${encoder.chunkSize} B · SHA-256 ${hash ? 'OK' : 'N/D'}`;
+  status('txStatus', 'Pronto. Baseline QR standard + fountain code.', 'ok');
   log(`TX preparato: ${file.name}, ${bytes.length} byte, stream ${state.meta.streamId}`);
-  drawSymbol();
+  await drawSymbol(++state.txGeneration);
 }
-function drawSymbol() {
-  if (!state.encoder) return;
-  const symbol = state.encoder.symbol(state.symbolId);
-  const packet = encodeOpticalPacket(state.meta, state.symbolId, symbol.data);
-  renderFrame($('txCanvas'), packet);
+
+async function drawSymbol(generation = state.txGeneration) {
+  if (!state.encoder || generation !== state.txGeneration) return;
+  const symbolId = state.symbolId;
+  const symbol = state.encoder.symbol(symbolId);
+  const packet = encodeOpticalPacket(state.meta, symbolId, symbol.data);
+  const qr = await renderFrame($('txCanvas'), packet);
+  if (generation !== state.txGeneration) return;
   state.txFrames++;
-  const kind = state.symbolId < state.encoder.sourceCount ? 'sorgente' : `repair d${symbol.indices.length}`;
+  state.symbolId = (state.symbolId + 1) >>> 0;
   const elapsed = state.txStartedAt ? Math.max(0.001, (performance.now() - state.txStartedAt) / 1000) : 0;
   const realFps = elapsed ? ((state.txFrames - 1) / elapsed).toFixed(1) : '—';
-  $('txFrame').textContent = `stream ${state.meta.streamId} · simbolo ${state.symbolId} · ${kind} · tx ${state.txFrames} · ${realFps} fps effettivi`;
-  state.symbolId = (state.symbolId + 1) >>> 0;
+  const kind = symbolId < state.encoder.sourceCount ? 'sorgente' : `repair d${symbol.indices.length}`;
+  $('txFrame').textContent = `QR V${qr.version} ECC ${qr.ecc} · stream ${state.meta.streamId} · simbolo ${symbolId} · ${kind} · ${realFps} fps`;
 }
-function scheduleNextTx() {
-  if (!state.timer) return;
-  const fps = Number($('fps').value); const interval = 1000 / fps; const started = performance.now();
-  drawSymbol(); const spent = performance.now() - started;
-  state.timer = setTimeout(scheduleNextTx, Math.max(0, interval - spent));
+
+async function txLoop(generation) {
+  while (state.transmitting && generation === state.txGeneration) {
+    const fps = Number($('fps').value); const interval = 1000 / fps; const started = performance.now();
+    try { await drawSymbol(generation); }
+    catch (error) {
+      state.transmitting = false;
+      status('txStatus', `Errore QR: ${error.message}`, 'error');
+      log(`TX QR error: ${error.stack || error.message}`);
+      break;
+    }
+    const spent = performance.now() - started;
+    if (generation !== state.txGeneration || !state.transmitting) break;
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, interval - spent)));
+  }
 }
 function startTransmit() {
-  if (!state.encoder || state.timer) return;
-  state.txStartedAt = performance.now(); state.txFrames = 0;
-  state.timer = setTimeout(scheduleNextTx, 0); requestWakeLock();
-  status('txStatus', `Trasmissione attiva a ${$('fps').value} fps. Il flusso è rateless: può continuare senza limite.`, 'ok');
+  if (!state.encoder || state.transmitting) return;
+  state.transmitting = true; state.txStartedAt = performance.now(); state.txFrames = 0;
+  const generation = ++state.txGeneration;
+  requestWakeLock();
+  status('txStatus', `Trasmissione QR attiva a ${$('fps').value} fps.`, 'ok');
   log(`TX start @ ${$('fps').value} fps`);
+  void txLoop(generation);
 }
 function stopTransmit() {
-  if (state.timer) clearTimeout(state.timer);
-  state.timer = null;
+  state.transmitting = false; state.txGeneration++;
   if (state.encoder) status('txStatus', 'Trasmissione in pausa.');
   releaseWakeLockIfIdle();
 }
-function restartTransmit() {
+async function restartTransmit() {
   if (!state.encoder) return;
-  stopTransmit(); state.symbolId = 0; state.txFrames = 0; drawSymbol();
+  stopTransmit(); state.symbolId = 0; state.txFrames = 0;
+  await drawSymbol(++state.txGeneration);
   status('txStatus', 'Sequenza riportata ai simboli sistematici iniziali.', 'ok');
   log('TX restart da simbolo 0');
 }
@@ -120,53 +116,103 @@ async function toggleFullscreenTx() {
   const stage = $('txStage');
   try {
     if (document.fullscreenElement) await document.exitFullscreen();
-    else if (stage.requestFullscreen) await stage.requestFullscreen();
+    else if (stage?.requestFullscreen) await stage.requestFullscreen();
   } catch (error) { status('txStatus', `Schermo intero non disponibile: ${error.message}`, 'warn'); }
+}
+
+function terminateWorkers() {
+  for (const worker of state.workers) worker?.terminate();
+  state.workers = []; state.workerBusy = []; state.workerCursor = 0;
+}
+function renderRxStats() {
+  const solved = state.rxDecoder?.solvedCount || 0; const total = state.rxDecoder?.sourceCount || 0;
+  $('rxStats').textContent = `${state.rxFrames} simboli fountain validi · ${state.rxQrDecoded} QR letti · ${state.rxCaptured} frame camera · ${state.rxDroppedBusy} frame saltati (worker occupati) · ${state.rxPacketRejected} pacchetti rifiutati · ${solved}/${total || '—'} blocchi`;
+}
+function ensureWorkers() {
+  if (state.workers.length) return;
+  for (let i = 0; i < RX_WORKERS; i++) {
+    const worker = new Worker(new URL('./qr-worker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = event => {
+      const { id, ready, bytes, error } = event.data || {};
+      if (id === -1) {
+        if (ready) log(`ZXing worker ${i + 1}/${RX_WORKERS} pronto`);
+        else {
+          state.rxWorkerErrors++;
+          status('rxStatus', `ZXing-WASM non si inizializza: ${error}`, 'error');
+          log(`ZXing worker init error: ${error}`);
+        }
+        return;
+      }
+      state.workerBusy[i] = false;
+      if (error) {
+        state.rxWorkerErrors++;
+        if (state.rxWorkerErrors <= 3) log(`ZXing worker error: ${error}`);
+      }
+      if (bytes?.length) { state.rxQrDecoded++; void onDecodedQr(bytes); }
+      renderRxStats();
+    };
+    worker.onerror = event => {
+      state.workerBusy[i] = false; state.rxWorkerErrors++;
+      status('rxStatus', `Worker QR: ${event.message}`, 'error');
+      log(`Worker QR fatal: ${event.message}`);
+    };
+    state.workers.push(worker); state.workerBusy.push(false);
+  }
+}
+function nextFreeWorker() {
+  for (let offset = 0; offset < state.workers.length; offset++) {
+    const index = (state.workerCursor + offset) % state.workers.length;
+    if (!state.workerBusy[index]) { state.workerCursor = (index + 1) % state.workers.length; return index; }
+  }
+  return -1;
 }
 
 async function startCamera() {
   if (state.receiving) return;
-  if (!navigator.mediaDevices?.getUserMedia) {
-    status('rxStatus', 'La fotocamera richiede HTTPS e un browser compatibile.', 'error'); return;
-  }
+  if (!navigator.mediaDevices?.getUserMedia) { status('rxStatus', 'La fotocamera richiede HTTPS e un browser compatibile.', 'error'); return; }
+  ensureWorkers();
+  const base = { facingMode: { ideal: 'environment' }, width: { ideal: RX_CAPTURE_WIDTH }, height: { ideal: Math.round(RX_CAPTURE_WIDTH * 3 / 4) } };
   try {
-    state.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false
-    });
+    try {
+      state.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...base, frameRate: { exact: RX_CAPTURE_FPS } } });
+    } catch {
+      state.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...base, frameRate: { ideal: RX_CAPTURE_FPS } } });
+    }
     const video = $('rxVideo'); video.srcObject = state.stream; await video.play();
     state.track = state.stream.getVideoTracks()[0] || null;
-    state.receiving = true; state.rxStartedAt = performance.now(); state.rxGeometry = null;
-    requestWakeLock();
-    status('rxStatus', 'Fotocamera attiva. Tieni l’intero quadrato dentro la guida: i finder vengono agganciati automaticamente.', 'ok');
-    log(`RX camera: ${state.track?.label || 'video track'} · ${video.videoWidth}x${video.videoHeight}`);
-    requestAnimationFrame(scanLoop);
+    state.receiving = true; state.captureGeneration++; state.rxStartedAt = performance.now(); requestWakeLock();
+    const settings = state.track?.getSettings?.() || {};
+    status('rxStatus', `Camera ${settings.width || video.videoWidth}×${settings.height || video.videoHeight}@${Math.round(settings.frameRate || 0)} · ZXing cerca il QR nell'intero frame.`, 'ok');
+    log(`RX camera: ${state.track?.label || 'video'} · ${video.videoWidth}x${video.videoHeight}`);
+    scheduleCapture(state.captureGeneration);
   } catch (error) {
     status('rxStatus', `Fotocamera non disponibile: ${error.message}`, 'error');
     log(`RX camera error: ${error.name} ${error.message}`);
   }
 }
 function stopCamera() {
-  state.receiving = false; state.rxGeometry = null;
+  state.receiving = false; state.captureGeneration++;
   state.stream?.getTracks().forEach(track => track.stop()); state.stream = null; state.track = null;
-  $('rxVideo').srcObject = null;
+  if ($('rxVideo')) $('rxVideo').srcObject = null;
   if (!state.rxDecoder?.complete) status('rxStatus', 'Fotocamera ferma.');
   releaseWakeLockIfIdle();
 }
 function resetReceiver() {
-  state.rxDecoder = null; state.rxMeta = null; state.rxFrames = 0; state.rxBad = 0; state.rxLastSymbol = -1;
-  state.rxGeometry = null; resetRxErrors(); state.expectedHash = null; state.rxStartedAt = performance.now();
-  $('rxProgress').value = 0; renderRxStats();
+  state.rxDecoder = null; state.rxMeta = null; state.rxFrames = 0; state.rxLastSymbol = -1;
+  state.rxCaptured = 0; state.rxDroppedBusy = 0; state.rxQrDecoded = 0; state.rxPacketRejected = 0; state.rxWorkerErrors = 0;
+  state.expectedHash = null; state.rxStartedAt = performance.now(); $('rxProgress').value = 0;
   if (state.downloadUrl) URL.revokeObjectURL(state.downloadUrl);
   state.downloadUrl = null; const download = $('download'); download.hidden = true; download.removeAttribute('href');
-  status('rxStatus', state.receiving ? 'Ricevitore azzerato. Riaggancio finder in corso.' : 'Ricevitore azzerato.');
+  renderRxStats();
+  status('rxStatus', state.receiving ? 'Ricevitore azzerato. Continua a inquadrare il QR.' : 'Ricevitore azzerato.');
   log('RX reset');
 }
+
 async function acceptPacket(packet) {
   if (!state.rxDecoder || state.rxMeta?.streamId !== packet.streamId) {
     state.rxMeta = packet;
     state.rxDecoder = new FountainDecoder(packet.sourceCount, packet.chunkSize, packet.fileLength);
-    state.rxFrames = 0; state.rxBad = 0; state.rxLastSymbol = -1; resetRxErrors();
-    state.expectedHash = packet.sha256; state.rxStartedAt = performance.now();
+    state.rxFrames = 0; state.rxLastSymbol = -1; state.expectedHash = packet.sha256; state.rxStartedAt = performance.now();
     log(`RX nuovo stream ${packet.streamId}: ${packet.fileName}, ${packet.fileLength} byte`);
   } else if (!compatiblePacket(state.rxMeta, packet)) throw new Error('Metadati stream incoerenti');
 
@@ -175,12 +221,11 @@ async function acceptPacket(packet) {
   const added = state.rxDecoder.addSymbol(packet.symbolId, packet.payload);
   if (!added) return;
   state.rxFrames++;
-  const pct = Math.floor(state.rxDecoder.progress * 1000) / 10;
-  $('rxProgress').value = pct;
+  const pct = Math.floor(state.rxDecoder.progress * 1000) / 10; $('rxProgress').value = pct;
   const elapsed = Math.max(0.001, (performance.now() - state.rxStartedAt) / 1000);
   const validRate = (state.rxFrames / elapsed).toFixed(1);
-  renderRxStats(`${validRate} validi/s`);
-  status('rxStatus', `Ricezione ${pct}% · ultimo simbolo ${packet.symbolId} · finder lock`, 'ok');
+  renderRxStats();
+  status('rxStatus', `Ricezione ${pct}% · ultimo simbolo ${packet.symbolId} · ${validRate} QR utili/s`, 'ok');
 
   if (!state.rxDecoder.complete) return;
   const bytes = state.rxDecoder.reconstruct(); const hash = await sha256Hex(bytes);
@@ -195,107 +240,77 @@ async function acceptPacket(packet) {
   status('rxStatus', `COMPLETATO · ${formatBytes(bytes.length)} · ${hash && state.expectedHash ? 'SHA-256 OK' : 'ricostruzione completata'}`, 'ok');
   log(`RX completo: ${link.download}, ${bytes.length} byte`); stopCamera();
 }
-
-function drawGuide() {
-  const size = Number($('guideSize').value); const inset = (100 - size) / 2;
-  $('guide').style.inset = `${inset}%`; $('guideValue').value = `${size}%`;
-  state.rxGeometry = null;
-}
-function copyCameraCropToAnalysis() {
-  const video = $('rxVideo'); if (!video.videoWidth || !video.videoHeight) return false;
-  const rawSquare = Math.min(video.videoWidth, video.videoHeight);
-  const baseX = (video.videoWidth - rawSquare) / 2; const baseY = (video.videoHeight - rawSquare) / 2;
-  const ratio = Number($('guideSize').value) / 100; const cropSize = rawSquare * ratio;
-  const sourceX = baseX + (rawSquare - cropSize) / 2; const sourceY = baseY + (rawSquare - cropSize) / 2;
-  const canvas = $('rxCanvas');
-  if (canvas.width !== ANALYSIS_SIZE || canvas.height !== ANALYSIS_SIZE) { canvas.width = ANALYSIS_SIZE; canvas.height = ANALYSIS_SIZE; }
-  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(video, sourceX, sourceY, cropSize, cropSize, 0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
-  return true;
-}
-function decodeCurrentFrame() {
-  const canvas = $('rxCanvas');
-  const diagnostics = {};
+async function onDecodedQr(bytes) {
   try {
-    const raw = decodeFrameFromCanvas(canvas, diagnostics, state.rxGeometry);
-    const packet = decodeOpticalPacket(raw);
-    state.rxGeometry = diagnostics.geometry || state.rxGeometry;
-    return { packet, diagnostics };
-  } catch (firstError) {
-    state.rxGeometry = null;
-    if (classifyRxError(firstError) === 'FINDER' || classifyRxError(firstError) === 'COLOR') throw firstError;
-    const retryDiagnostics = {};
-    const raw = decodeFrameFromCanvas(canvas, retryDiagnostics, null);
-    const packet = decodeOpticalPacket(raw);
-    state.rxGeometry = retryDiagnostics.geometry || null;
-    return { packet, diagnostics: retryDiagnostics };
+    const packet = decodeOpticalPacket(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+    await acceptPacket(packet);
+  } catch (error) {
+    state.rxPacketRejected++;
+    if (state.rxPacketRejected <= 3 || state.rxPacketRejected % 20 === 0) log(`QR letto ma pacchetto rifiutato: ${error.message}`);
   }
+  renderRxStats();
 }
 
-let lastScan = 0; let scanBusy = false;
-async function scanLoop(now) {
-  if (!state.receiving) return;
-  if (!scanBusy && now - lastScan >= 80) {
-    lastScan = now; scanBusy = true;
-    try {
-      if (copyCameraCropToAnalysis()) {
-        const hadGeometry = Boolean(state.rxGeometry);
-        const { packet, diagnostics } = decodeCurrentFrame();
-        if (!hadGeometry && diagnostics?.finderContrast) {
-          log(`RX finder lock · contrasto ${diagnostics.finderContrast.toFixed(1)} · cella ${diagnostics.meanCell.toFixed(2)} px · separazione colore ${diagnostics.colorSeparation.toFixed(4)}`);
-        }
-        await acceptPacket(packet);
-      }
-    } catch (error) {
-      recordRxError(error);
-      if (state.rxBad % 5 === 0) {
-        renderRxStats(`ultimo: ${state.rxLastError}`);
-        status('rxStatus', `Nessun frame valido ancora · ${state.rxLastError}`, 'warn');
-      }
-    } finally { scanBusy = false; }
-  }
-  requestAnimationFrame(scanLoop);
+function captureFrame() {
+  const video = $('rxVideo'); const width = video.videoWidth; const height = video.videoHeight;
+  if (!width || !height) return;
+  const workerIndex = nextFreeWorker(); state.rxCaptured++;
+  if (workerIndex < 0) { state.rxDroppedBusy++; renderRxStats(); return; }
+  if (!state.captureCanvas) state.captureCanvas = document.createElement('canvas');
+  const canvas = state.captureCanvas;
+  if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+  ctx.drawImage(video, 0, 0, width, height);
+  const image = ctx.getImageData(0, 0, width, height); const id = state.frameId++;
+  state.workerBusy[workerIndex] = true;
+  state.workers[workerIndex].postMessage({ id, buf: image.data.buffer, w: width, h: height }, [image.data.buffer]);
+}
+function scheduleCapture(generation) {
+  if (!state.receiving || generation !== state.captureGeneration) return;
+  const video = $('rxVideo');
+  const next = () => {
+    if (!state.receiving || generation !== state.captureGeneration) return;
+    captureFrame(); scheduleCapture(generation);
+  };
+  if (typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(next);
+  else requestAnimationFrame(next);
 }
 
 async function runSelfTest() {
   try {
     const payload = Uint8Array.from({ length: 320 }, (_, i) => (i * 37 + 11) & 255);
     const meta = { streamId: 0x12345678, sourceCount: 1, chunkSize: 320, fileLength: 320, fileName: 'selftest.bin', sha256: 'ab'.repeat(32) };
-    const packet = encodeOpticalPacket(meta, 0, payload);
-    if (packet.length > CAPACITY_BYTES) throw new Error('packet > optical capacity');
-    const canvas = document.createElement('canvas'); canvas.style.width = '720px'; canvas.style.height = '720px'; renderFrame(canvas, packet);
-    const analysis = document.createElement('canvas'); analysis.width = ANALYSIS_SIZE; analysis.height = ANALYSIS_SIZE;
-    const actx = analysis.getContext('2d', { alpha: false }); actx.drawImage(canvas, 0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
-    const diagnostics = {}; const decodedRaw = decodeFrameFromCanvas(analysis, diagnostics); const decoded = decodeOpticalPacket(decodedRaw);
-    if (decoded.streamId !== meta.streamId || decoded.symbolId !== 0) throw new Error('metadata mismatch');
-    for (let i = 0; i < payload.length; i++) if (decoded.payload[i] !== payload[i]) throw new Error(`payload mismatch @${i}`);
-    status('selfTest', `Autotest: OK · finder automatici · frame ${packet.length}/${CAPACITY_BYTES} B · encode→render→decode verificata`, 'ok');
-    log(`Autotest ottico OK · finder contrast ${diagnostics.finderContrast?.toFixed(1) || '—'}`);
+    const packet = encodeOpticalPacket(meta, 0, payload); const parsed = decodeOpticalPacket(packet);
+    if (parsed.streamId !== meta.streamId || parsed.payload.length !== payload.length) throw new Error('QCT1 roundtrip');
+    const qr = await renderFrame(document.createElement('canvas'), packet);
+    status('selfTest', `Autotest: OK · QCT1 + QR generator V${qr.version} ECC ${qr.ecc}. ZXing-WASM viene verificato dai worker all'avvio camera.`, 'ok');
+    log(`Autotest baseline QR OK · V${qr.version}`);
   } catch (error) {
-    status('selfTest', `Autotest: ERRORE · ${error.message}`, 'error'); log(`Autotest FAIL: ${error.stack || error.message}`);
+    status('selfTest', `Autotest: ERRORE · ${error.message}`, 'error');
+    log(`Autotest FAIL: ${error.stack || error.message}`);
   }
 }
-
-function updateNetworkState() { $('netState').textContent = navigator.onLine ? 'rete: online' : 'rete: offline'; }
+function updateNetworkState() { if ($('netState')) $('netState').textContent = navigator.onLine ? 'rete: online' : 'rete: offline'; }
 async function setupPwa() {
   updateNetworkState(); window.addEventListener('online', updateNetworkState); window.addEventListener('offline', updateNetworkState);
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-  if (standalone) $('pwaState').textContent = 'app: installata';
+  if (standalone && $('pwaState')) $('pwaState').textContent = 'app: installata';
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     try {
       const registration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
-      $('pwaState').textContent = standalone ? 'app: installata' : 'app: offline pronta';
+      if ($('pwaState')) $('pwaState').textContent = standalone ? 'app: installata' : 'app: offline pronta';
       registration.update().catch(() => {}); log(`Service worker registrato: ${registration.scope}`);
-    } catch (error) { $('pwaState').textContent = 'app: SW errore'; log(`Service worker error: ${error.message}`); }
-  } else if (!standalone) $('pwaState').textContent = 'app: browser';
-  window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); state.installPrompt = event; $('installPwa').hidden = false; });
-  window.addEventListener('appinstalled', () => { $('installPwa').hidden = true; $('pwaState').textContent = 'app: installata'; state.installPrompt = null; log('PWA installata'); });
-  $('installPwa').addEventListener('click', async () => {
-    if (!state.installPrompt) return; await state.installPrompt.prompt(); await state.installPrompt.userChoice; state.installPrompt = null; $('installPwa').hidden = true;
+    } catch (error) {
+      if ($('pwaState')) $('pwaState').textContent = 'app: SW errore';
+      log(`Service worker error: ${error.message}`);
+    }
+  }
+  window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); state.installPrompt = event; if ($('installPwa')) $('installPwa').hidden = false; });
+  window.addEventListener('appinstalled', () => { if ($('installPwa')) $('installPwa').hidden = true; if ($('pwaState')) $('pwaState').textContent = 'app: installata'; state.installPrompt = null; });
+  $('installPwa')?.addEventListener('click', async () => {
+    if (!state.installPrompt) return;
+    await state.installPrompt.prompt(); await state.installPrompt.userChoice; state.installPrompt = null; $('installPwa').hidden = true;
   });
-  const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  if (isiOS && !standalone) $('pwaState').title = 'Su iPhone/iPad: Condividi → Aggiungi a Home';
 }
 
 $('fileInput').addEventListener('change', event => {
@@ -304,14 +319,17 @@ $('fileInput').addEventListener('change', event => {
 });
 $('startTx').addEventListener('click', startTransmit);
 $('stopTx').addEventListener('click', stopTransmit);
-$('restartTx').addEventListener('click', restartTransmit);
-$('fullTx').addEventListener('click', toggleFullscreenTx);
+$('restartTx')?.addEventListener('click', () => { void restartTransmit(); });
+$('fullTx')?.addEventListener('click', toggleFullscreenTx);
 $('startRx').addEventListener('click', startCamera);
 $('stopRx').addEventListener('click', stopCamera);
 $('resetRx').addEventListener('click', resetReceiver);
-$('guideSize').addEventListener('input', drawGuide);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && (state.timer || state.receiving)) requestWakeLock(); });
-window.addEventListener('beforeunload', () => { stopTransmit(); stopCamera(); if (state.downloadUrl) URL.revokeObjectURL(state.downloadUrl); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && (state.transmitting || state.receiving)) requestWakeLock(); });
+window.addEventListener('beforeunload', () => {
+  stopTransmit(); stopCamera(); terminateWorkers(); if (state.downloadUrl) URL.revokeObjectURL(state.downloadUrl);
+});
 
-$('capacity').textContent = `capacità: ${CAPACITY_BYTES} B/frame raw`;
-resetRxErrors(); drawGuide(); setupPwa(); runSelfTest();
+$('capacity').textContent = `baseline: QR standard ECC ${QR_ECC} · QCT1 + fountain`;
+resetReceiver();
+setupPwa();
+void runSelfTest();
