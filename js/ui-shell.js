@@ -5,6 +5,8 @@
 // camera capture or telemetry. The technical engine therefore remains testable
 // and independent from the presentation layer.
 
+import './tx-optical-view.js';
+
 const homeView = document.getElementById('homeView');
 const workspaceView = document.getElementById('workspaceView');
 const txView = document.getElementById('txView');
