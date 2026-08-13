@@ -1,67 +1,37 @@
 # qcolortrasfer specification
 
 ## Goal
-Universal static PWA for offline screen-to-camera file transfer using colored visual frames, with tolerance of lost frames and no mandatory return channel.
+PWA pubblica per trasferimento file screen-to-camera senza backend, tollerante alla perdita di frame e con fountain coding.
 
-## Product constraints
-- Public mobile-first web app.
-- Static hosting compatible with GitHub Pages project paths.
-- Installable PWA and offline-capable after first load.
-- No upload of file contents to a server.
-- No mandatory backend or account.
-- MIT license for qcolortrasfer-owned source.
-- Explicit attribution to relevant prior projects.
+## Baseline optical architecture (v1.1)
+La baseline affidabile usa QR standard invece della precedente matrice colore custom.
 
-## Layering
-1. File layer: filename, size, SHA-256.
-2. Fountain layer: source chunks + deterministic unbounded repair symbols.
-3. Packet layer: QCT1 stream id, symbol id, chunk metadata, CRC32.
-4. Optical layer: matrix geometry, finder cells, calibration palette, 4-color data cells.
-5. Camera layer: centered user-guided crop, downscale, per-frame color classification.
-6. Reconstruction: reject bad packets, deduplicate, fountain peeling, trim file length, verify SHA-256.
-7. PWA layer: manifest, service worker cache, install/standalone support.
+1. File: nome, dimensione, SHA-256.
+2. Fountain: chunk sorgente da 320 byte + repair symbols deterministici.
+3. Packet: QCT1, stream id, symbol id, metadati, CRC32.
+4. Optical TX: QR standard, byte mode, ECC L, quiet zone 4 moduli, mask 4.
+5. Camera RX: fotogramma intero, preferenza 1280 px / 30 fps.
+6. Decode: pool di 2 Web Worker con ZXing-C++ tramite `zxing-wasm`.
+7. Erasure handling: quando tutti i worker sono occupati il frame viene semplicemente scartato.
+8. Reconstruction: fountain decoder + verifica SHA-256 finale.
 
-## Protocol v1
-### Fountain
-- Original qcolortrasfer LT-style experimental implementation.
-- Source chunk size: 320 bytes.
-- Systematic symbols first, then deterministic repair symbols.
-- Repair symbols are XOR equations with deterministic degree selection.
-- Decoder uses iterative peeling/substitution.
-- Duplicate symbol ids are ignored.
-- This is not Wirehair, RaptorQ or a standards claim.
+## Design decision
+Non implementare finder, omografia, timing o correzione di errori QR custom nella baseline. Questi compiti sono delegati a un decoder QR maturo. La precedente matrice 48x48 rimane una linea sperimentale, non la pipeline di riferimento.
 
-### Optical matrix
-- 48 × 48 logical cells.
-- Outer black border and four 7 × 7 finder-like markers reserved.
-- Four in-frame calibration cells reserved.
-- Four colors represent dibits `00`, `01`, `10`, `11`.
-- Analysis canvas: 240 × 240 (5 pixels per logical cell).
-- One `getImageData()` per scan.
+## Color roadmap
+Il colore verrà reintrodotto incrementalmente solo dopo una baseline B/N misurata:
 
-### Color classification
-- References sampled from the same captured frame.
-- Cells compared in normalized RGB chromaticity space.
-- Minimum palette-separation rejects unusable frames.
+- fase A: QR B/N standard, misurare decode rate e goodput;
+- fase B: colorazione che preserva la luminanza/decodificabilità QR, senza payload extra;
+- fase C: canale colore addizionale per modulo o regione con calibrazione;
+- fase D: ECC dedicato del canale colore e soft decisions;
+- fase E: confronto throughput/BER con QR B/N baseline.
 
-### Integrity
-- CRC32 protects every QCT1 packet.
-- Invalid frames never enter fountain decode.
-- SHA-256 is carried when Web Crypto is available.
-- Completed files are withheld if SHA-256 differs.
+Il QR B/N deve poter continuare a trasportare metadati/sincronizzazione anche quando il canale colore fallisce.
 
-### Mid-stream initialization
-Every packet includes stream id, symbol id, source block count, chunk size, original file length, UTF-8 filename prefix and optional SHA-256.
-
-## Receiver alignment
-v1 uses a user-adjustable centered square crop rather than automatic homography. The guide/crop is adjustable from 62% to 94% of the visible square.
-
-## PWA behavior
-- Relative paths support GitHub Pages project hosting.
-- Service worker caches only qcolortrasfer-owned static resources.
-- Navigation is network-first with cached fallback; static assets cache-first.
-- Camera access is user-initiated.
-- No analytics, tracking or third-party runtime scripts.
-
-## Planned improvements
-Automatic finder/perspective correction, region ECC, 2/4/8-state experiments, WASM/SIMD/GPU, multiple symbols/frame, optional Wirehair backend, color+shape and temporal modulation, throughput/BER/device benchmarks.
+## Licensing constraint
+- qcolortrasfer-owned code: MIT.
+- Decimen source/architecture: solo riferimento o adattamenti dalla release v0.3.0 MIT.
+- Nessun codice Decimen >= v0.4.0 AGPL.
+- `qrcode`: MIT.
+- `zxing-wasm`: MIT wrapper; ZXing-C++ incluso è Apache-2.0.
