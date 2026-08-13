@@ -70,27 +70,33 @@
     <main>
       <section id="txView" class="panel tx-panel mode-panel" aria-labelledby="tx-title">
         <div class="section-title"><div><span class="section-eyebrow">TRASMISSIONE</span><h2 id="tx-title">INVIA FILE</h2></div><span id="gridState" class="step">4 QR</span></div>
+
+        <div class="tx-flow" aria-label="Procedura di invio">
+          <span><b>1</b> SCEGLI FILE</span><span class="tx-flow-arrow">→</span>
+          <span><b>2</b> CONFIGURA</span><span class="tx-flow-arrow">→</span>
+          <span><b>3</b> START</span><span class="tx-flow-result">QR A TUTTO SCHERMO + TRASMISSIONE</span>
+        </div>
+
         <div class="tx-toolbar">
           <label class="file-control"><span>File</span><input id="fileInput" type="file"></label>
           <label><span>Payload / canale</span><select id="payloadBytes"><option value="1024">1024 B</option><option value="1365">1365 B SAFE</option><option value="2048">2048 B</option><option value="2560">2560 B</option><option value="2925" selected>2925 B MAX</option></select></label>
           <label><span>Profilo ottico</span><select id="colorMode"><option value="bw">B/N · 1 canale BASELINE</option><option value="4" selected>4 stati · 2 canali HIGH THROUGHPUT</option><option value="4a">4 stati · 2 canali ADAPTIVE fallback</option><option value="8">8 stati · 3 canali EXP</option></select></label>
           <label><span>fps / QR</span><select id="fps"><option value="8">8</option><option value="12">12</option><option value="24" selected>24</option><option value="30">30</option><option value="60">60 MAX</option></select></label>
           <label><span>Griglia</span><select id="gridMode"><option value="auto" selected>AUTO 4/6</option><option value="4">4 QR</option><option value="6">6 QR</option></select></label>
-          <div class="toolbar-buttons"><button id="startTx" class="primary-action" type="button">START</button><button id="stopTx" type="button">PAUSA</button><button id="fullTx" type="button">SCHERMO INTERO</button></div>
+          <div class="toolbar-buttons"><button id="startTx" class="primary-action tx-main-start" type="button">START → QR</button></div>
         </div>
+
+        <!-- Legacy engine controls remain in DOM because app.js/ui-shell use their
+             public ids. They are not part of the normal TX workflow anymore. -->
+        <div class="tx-legacy-controls" hidden>
+          <button id="stopTx" type="button">PAUSA</button>
+          <button id="fullTx" type="button">QR A TUTTO SCHERMO</button>
+        </div>
+
         <div id="txFileInfo" class="file-info">Nessun file selezionato.</div>
-        <div id="txStatus" class="status" aria-live="polite">Seleziona un file.</div>
-        <div id="txFullscreenShell" class="tx-fullscreen-shell">
-          <div id="txStage" class="tx-stage"><canvas id="txCanvas" aria-label="Griglia di QR high-throughput"></canvas></div>
-          <div id="txFsControls" class="tx-fullscreen-controls" aria-label="Controlli trasmissione a schermo intero">
-            <button id="fsStartTx" class="fs-start primary-action" type="button">START</button>
-            <button id="fsStopTx" type="button">STOP</button>
-            <button id="fsResetTx" type="button">RESET</button>
-            <button id="fsExitTx" type="button">ESCI</button>
-          </div>
-        </div>
+        <div id="txStatus" class="status" aria-live="polite">Seleziona un file, configura il profilo e premi START.</div>
         <div id="txFrame" class="frame-meta telemetry-line">—</div>
-        <div class="note"><strong>V2 HIGH THROUGHPUT:</strong> B/N BASELINE usa un normale QR per posizione con la stessa pipeline fountain/QCT2/worker/ROI del profilo originale; 4 STATI aggiunge C1 nella crominanza. AUTO usa <strong>6 QR</strong> quando restano abbastanza grandi, altrimenti <strong>4 QR</strong>. SCHERMO INTERO mostra solo i barcode e i quattro mini-controlli inferiori.</div>
+        <div class="note"><strong>COME FUNZIONA:</strong> la schermata normale serve solo a preparare il trasferimento. Premendo <strong>START → QR</strong> si apre automaticamente la vista ottica con i QR alla massima dimensione disponibile e la trasmissione parte. In quella vista restano soltanto START, STOP, RESET ed ESCI. ESCI mette in pausa il TX e torna qui.</div>
       </section>
 
       <section id="rxView" class="panel rx-panel mode-panel" aria-labelledby="rx-title" hidden>
@@ -117,7 +123,7 @@
           <div class="diag-grid">
             <div><strong>Protocollo</strong><span>QCT2 24 B header · mono/4-state/8-state · QCT1 leggibile</span></div>
             <div><strong>Display</strong><span>AUTO 4/6 QR · 2925 B/canale · 24 fps default · 60 max</span></div>
-            <div><strong>TX</strong><span>B/N o colore · worker raster + lookahead ×3 + repaint rAF sfalsato</span></div>
+            <div><strong>TX</strong><span>START apre la vista ottica · B/N o colore · worker raster + lookahead ×3</span></div>
             <div><strong>RX</strong><span>1280@60 target · ROI/crop · 2–6 worker · C1 pure decode solo se presente</span></div>
           </div>
           <pre id="log"></pre>
@@ -126,6 +132,18 @@
     </main>
 
     <footer>qcolortrasfer è software libero MIT. La baseline B/N e il robust-soliton riconoscono esplicitamente Decimen Optical Transfer v0.3.0 MIT. La v2 reimplementa indipendentemente principi high-throughput generali e aggiunge il layer cromatico qcolor; nessun codice AGPL di Decimen ≥0.4 è incorporato.</footer>
+  </div>
+
+  <!-- Optical stage is deliberately outside the normal workspace. When idle it
+       is parked off-viewport but keeps valid dimensions for QR prerendering. -->
+  <div id="txFullscreenShell" class="tx-fullscreen-shell" aria-label="Vista ottica trasmissione QR">
+    <div id="txStage" class="tx-stage"><canvas id="txCanvas" aria-label="Griglia di QR high-throughput"></canvas></div>
+    <div id="txFsControls" class="tx-fullscreen-controls" aria-label="Controlli trasmissione ottica">
+      <button id="fsStartTx" class="fs-start primary-action" type="button">START</button>
+      <button id="fsStopTx" type="button">STOP</button>
+      <button id="fsResetTx" type="button">RESET</button>
+      <button id="fsExitTx" type="button">ESCI</button>
+    </div>
   </div>
 
   <script type="module" src="./js/ui-shell.js"></script>
