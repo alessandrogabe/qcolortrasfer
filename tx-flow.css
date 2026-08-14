@@ -5,4 +5,19 @@
    intrinsic canvas size is larger than the CSS box, so max-width/max-height
    produce the same small remainder stretch without jagged module widths. */
 body[data-tx-method="multi"] .tx-fullscreen-shell.tx-optical-overlay #txCanvas{width:auto!important;height:auto!important;max-width:100%!important;max-height:100%!important;image-rendering:auto!important}
+
+/* DECIMEN + AUX REPAIR. The helper is deliberately much smaller than the main
+   QR. Portrait screens reserve the normally-unused lower strip; landscape
+   screens reserve a strip at the right. Classic's stageBudget() sees the
+   padding, therefore the main QR is recomputed rather than CSS-stretched. */
+.tx-stage.aux-repair-active{position:relative!important}
+.tx-fullscreen-shell.tx-optical-overlay .tx-stage.aux-repair-active:not(.aux-repair-side){padding-bottom:calc(var(--tx-edge-y,10px) + var(--aux-repair-reserve,136px))!important}
+.tx-fullscreen-shell.tx-optical-overlay .tx-stage.aux-repair-active.aux-repair-side{padding-right:calc(var(--tx-edge-x,12px) + var(--aux-repair-reserve,136px))!important}
+#txAuxCanvas{display:block;position:absolute;z-index:4;background:#fff;image-rendering:pixelated;box-shadow:0 0 0 5px #fff;touch-action:none}
+.tx-fullscreen-shell:not(.tx-optical-overlay):not(:fullscreen):not(.immersive-fallback) #txAuxCanvas{display:none!important}
+.tx-fullscreen-shell.tx-optical-overlay .tx-stage.aux-repair-active:not(.aux-repair-side) #txAuxCanvas{left:50%;bottom:var(--tx-edge-y,10px);transform:translateX(-50%)}
+.tx-fullscreen-shell.tx-optical-overlay .tx-stage.aux-repair-active.aux-repair-side #txAuxCanvas{right:var(--tx-edge-x,12px);top:50%;transform:translateY(-50%)}
+#auxRepairBadge{border-color:#7f6d3e;color:#f4c96b}
+#txAuxStats{border-left:3px solid #7f6d3e}
+
 @media(max-width:600px){.tx-flow{gap:5px}.tx-flow-result{flex-basis:100%;margin-left:0;padding-top:2px}.tx-toolbar .toolbar-buttons{flex:1 1 100%}.tx-main-start{width:100%;min-height:44px}}
