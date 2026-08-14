@@ -1,25 +1,26 @@
 // Portable multi-QR + chromatic decoder worker.
 //
-// V2.5 has three decode paths:
+// V2.8 keeps three decode paths:
 // - full: occasional whole-frame ZXing acquisition, including sightings;
-// - crop fallback: one ROI through the ordinary ZXing detector;
-// - tracked: if a previous crop established quad + module count, perspective-
-//   sample that known grid directly and decode a clean synthetic QR in isPure
-//   mode. The expensive finder/detector stage is skipped entirely.
+// - crop fallback: one ROI through ordinary ZXing;
+// - tracked: refine cached geometry against finder/alignment structure, sample
+//   the known module grid, then decode a clean synthetic QR in isPure mode.
 //
-// V2.6 also recognizes the small QAR1 AUX repair QR. AUX bytes are returned in
-// a separate field so app.js keeps processing only QCT1/QCT2 symbols.
+// QAR1 and QAR2 helper packets are returned separately so app.js continues to
+// process only QCT1/QCT2 symbols. Tracked misses always fall back on the same
+// crop, and fallback decodes re-anchor geometry for the next frame.
 //
-// The tracked sampler is original qcolortrasfer/MIT code. It implements the
-// general geometry principle independently; no Decimen >=0.4 source is used.
+// The tracked sampler is original qcolortrasfer/MIT code. It independently
+// implements general high-throughput optical principles; no Decimen >=0.4 AGPL
+// source is incorporated.
 
 import {
   chromaScoreA, chromaScoreB, clusterColorScores, classifyColorScore
 } from './color-code.js';
 import { FLAG_COLOR_8, FLAG_V2_COLOR_8, MAGIC, MAGIC_V2 } from './protocol.js';
-import { AUX_MAGIC } from './aux-repair.js';
+import { isAuxRepairPacket } from './aux-repair.js';
 import { detectionBoxFromPosition } from './rx-roi.js';
-import { sampleTrackedQr, shiftQuad, modulesFromVersion, versionFromModules } from './tracked-qr.js';
+import { sampleTrackedQrCandidates, shiftQuad, modulesFromVersion, versionFromModules } from './tracked-qr.js';
 
 const ZXING_MODULE_URL = 'https://esm.sh/zxing-wasm@2.0.0/reader?bundle';
 const ZXING_WASM_URL = 'https://cdn.jsdelivr.net/npm/zxing-wasm@2.0.0/dist/reader/zxing_reader.wasm';
@@ -34,12 +35,12 @@ const COLOR_MIN_SEPARATION_B = 0.06;
 
 const FULL_OPTIONS = {
   formats: ['QRCode'], maxNumberOfSymbols: MAX_FULL_SYMBOLS,
-  tryHarder: true, tryRotate: true, tryInvert: false, tryDownscale: true,
+  tryHarder: true, tryRotate: false, tryInvert: false, tryDownscale: true,
   returnErrors: true
 };
 const CROP_OPTIONS = {
   formats: ['QRCode'], maxNumberOfSymbols: 1,
-  tryHarder: false, tryRotate: false, tryInvert: false, tryDownscale: false,
+  tryHarder: true, tryRotate: false, tryInvert: false, tryDownscale: true,
   returnErrors: false
 };
 const PURE_OPTIONS = {
@@ -70,7 +71,7 @@ function packetMagic(bytes) {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0);
 }
 function isQct(bytes) { const magic = packetMagic(bytes); return magic === MAGIC || magic === MAGIC_V2; }
-function isAux(bytes) { return packetMagic(bytes) === AUX_MAGIC; }
+function isAux(bytes) { return isAuxRepairPacket(bytes); }
 function isOptical(bytes) { return isQct(bytes) || isAux(bytes); }
 function usesEightStates(bytes) {
   const magic = packetMagic(bytes);
@@ -176,15 +177,24 @@ async function decodeSynthetic(reader,matrices) { return (await decodeSyntheticR
 async function tryTrackedBase(reader,image,trackedQuad,trackedModules,originX,originY) {
   if(!trackedQuad||!(trackedModules>0))return null;
   const localQuad=shiftQuad(trackedQuad,-originX,-originY); if(!localQuad)return null;
-  const sampled=sampleTrackedQr(image,localQuad,trackedModules); if(!sampled)return null;
-  const hits=await decodeSyntheticResults(reader,[sampled]);
-  const hit=hits[0]; if(!hit)return null;
-  return {bytes:hit.bytes,localQuad,globalQuad:trackedQuad,modules:trackedModules,separation:sampled.separation};
+  const sampled=sampleTrackedQrCandidates(image,localQuad,trackedModules); if(!sampled)return null;
+  for(const candidate of sampled.candidates){
+    const hits=await decodeSyntheticResults(reader,[candidate]);
+    const hit=hits[0]; if(!hit)continue;
+    const refinedLocal=sampled.refinedQuad||localQuad;
+    const refinedGlobal=shiftQuad(refinedLocal,originX,originY)||trackedQuad;
+    return {
+      bytes:hit.bytes,localQuad:refinedLocal,globalQuad:refinedGlobal,modules:trackedModules,
+      separation:sampled.separation,anchorScore:sampled.anchorScore,
+      alignmentAnchors:sampled.alignmentAnchors,kind:candidate.kind
+    };
+  }
+  return null;
 }
 
 self.onmessage=async event=>{
   const {id,buf,w,h,mode='full',regionId=null,originX=0,originY=0,decodeColor=mode==='crop',trackedQuad=null,trackedModules=0}=event.data||{};
-  let trackedAttempted=false,trackedHit=false,trackedSeparation=0;
+  let trackedAttempted=false,trackedHit=false,trackedSeparation=0,trackedAnchorScore=0,trackedAlignmentAnchors=0,trackedKind='';
   try{
     const reader=await getReader(); const image=new ImageData(new Uint8ClampedArray(buf),w,h);
     let results=[],base=[],auxBase=[],detections=[],symbols=[],auxSymbols=[];
@@ -193,7 +203,8 @@ self.onmessage=async event=>{
       trackedAttempted=true;
       tracked=await tryTrackedBase(reader,image,trackedQuad,trackedModules,originX,originY);
       if(tracked){
-        trackedHit=true; trackedSeparation=tracked.separation;
+        trackedHit=true; trackedSeparation=tracked.separation; trackedAnchorScore=tracked.anchorScore;
+        trackedAlignmentAnchors=tracked.alignmentAnchors; trackedKind=tracked.kind;
         const syntheticResult={bytes:tracked.bytes,position:tracked.localQuad,version:versionFromModules(tracked.modules)};
         if(isQct(tracked.bytes)){base=[syntheticResult];symbols=[tracked.bytes];}
         else if(isAux(tracked.bytes)){auxBase=[syntheticResult];auxSymbols=[tracked.bytes];}
@@ -219,8 +230,8 @@ self.onmessage=async event=>{
       }
     } else eightBase=base.reduce((count,item)=>count+(usesEightStates(item.bytes)?1:0),0);
     const colorA=decodeColor?await decodeSynthetic(reader,matricesA):[],colorB=decodeColor?await decodeSynthetic(reader,matricesB):[]; symbols.push(...colorA,...colorB);
-    self.postMessage({id,mode,regionId,detections,symbols,auxSymbols,baseCount:base.length,auxCount:auxBase.length,eightBase,color1Candidates:matricesA.length,color1Count:colorA.length,color1Separation:matricesA.length?sepA/matricesA.length:0,color2Candidates:matricesB.length,color2Count:colorB.length,color2Separation:matricesB.length?sepB/matricesB.length:0,trackedAttempted,trackedHit,trackedSeparation,error:null});
-  }catch(error){self.postMessage({id,mode,regionId,detections:[],symbols:[],auxSymbols:[],baseCount:0,auxCount:0,eightBase:0,color1Candidates:0,color1Count:0,color1Separation:0,color2Candidates:0,color2Count:0,color2Separation:0,trackedAttempted,trackedHit:false,trackedSeparation,error:error?.message||String(error)});}
+    self.postMessage({id,mode,regionId,detections,symbols,auxSymbols,baseCount:base.length,auxCount:auxBase.length,eightBase,color1Candidates:matricesA.length,color1Count:colorA.length,color1Separation:matricesA.length?sepA/matricesA.length:0,color2Candidates:matricesB.length,color2Count:colorB.length,color2Separation:matricesB.length?sepB/matricesB.length:0,trackedAttempted,trackedHit,trackedSeparation,trackedAnchorScore,trackedAlignmentAnchors,trackedKind,error:null});
+  }catch(error){self.postMessage({id,mode,regionId,detections:[],symbols:[],auxSymbols:[],baseCount:0,auxCount:0,eightBase:0,color1Candidates:0,color1Count:0,color1Separation:0,color2Candidates:0,color2Count:0,color2Separation:0,trackedAttempted,trackedHit:false,trackedSeparation,trackedAnchorScore,trackedAlignmentAnchors,trackedKind,error:error?.message||String(error)});}
 };
 
 void Promise.all([getReader(),getQrCode()]).then(()=>self.postMessage({id:-1,ready:true,symbols:[],auxSymbols:[],detections:[],error:null})).catch(error=>self.postMessage({id:-1,ready:false,symbols:[],auxSymbols:[],detections:[],error:error?.message||String(error)}));
