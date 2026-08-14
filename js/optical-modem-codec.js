@@ -36,8 +36,6 @@ export const MODEM_HAMMING_WORDS = Math.ceil(MODEM_RAW_BITS / 11);
 export const MODEM_CODE_BITS = MODEM_HAMMING_WORDS * 15;
 export const MODEM_CODE_CELLS = Math.ceil(MODEM_CODE_BITS / 2);
 
-// High-saturation palette, deliberately no yellow. Black/white are reserved for
-// sync/fiducials and are never data symbols.
 export const MODEM_PALETTE = Object.freeze([
   Object.freeze([226, 34, 46]),
   Object.freeze([34, 202, 74]),
@@ -63,6 +61,16 @@ const SOURCE_MARKER_CENTERS = Object.freeze([
   Object.freeze({x:MODEM_GRID_W-5.5,y:5.5}),
   Object.freeze({x:MODEM_GRID_W-5.5,y:MODEM_GRID_H-5.5}),
   Object.freeze({x:5.5,y:MODEM_GRID_H-5.5}),
+]);
+const SOURCE_PILOT_CENTERS = Object.freeze([
+  Object.freeze({x:64.5,y:36.5}),
+  Object.freeze({x:128.5,y:36.5}),
+  Object.freeze({x:128.5,y:72.5}),
+  Object.freeze({x:64.5,y:72.5}),
+]);
+const ANCHOR_SETS = Object.freeze([
+  Object.freeze({name:'outer',points:SOURCE_MARKER_CENTERS}),
+  Object.freeze({name:'pilot',points:SOURCE_PILOT_CENTERS}),
 ]);
 
 function gcd(a,b){while(b){const t=a%b;a=b;b=t;}return Math.abs(a);}
@@ -241,11 +249,11 @@ function refineMarker(image,marker){
 export function refineModemMarkers(image,tracked){
   if(!tracked?.markers?.length||tracked.markers.length!==4)return null;const markers=[];
   for(const marker of tracked.markers){const next=refineMarker(image,marker);if(!next)return null;markers.push(next);}
-  return{markers,rotation:Number.isInteger(tracked.rotation)?tracked.rotation:0,score:markers.reduce((s,m)=>s+m.score,0)/4};
+  return{markers,rotation:Number.isInteger(tracked.rotation)?tracked.rotation:0,anchorSet:tracked.anchorSet||null,score:markers.reduce((s,m)=>s+m.score,0)/4};
 }
 
-function homographyForRotation(imageMarkers,rotation){
-  const dst=[];for(let i=0;i<4;i++)dst.push(imageMarkers[(i+rotation)%4]);return homographyFromPoints(SOURCE_MARKER_CENTERS,dst);
+function homographyForRotation(imageMarkers,rotation,sourcePoints){
+  const dst=[];for(let i=0;i<4;i++)dst.push(imageMarkers[(i+rotation)%4]);return homographyFromPoints(sourcePoints,dst);
 }
 
 function syncScore(image,h){
@@ -257,9 +265,11 @@ function syncScore(image,h){
   return{accuracy:correct/samples.length,separation,score:correct/samples.length*100+Math.min(30,separation/4)};
 }
 
-function chooseRotation(image,markers,preferred=null){
-  const order=[];if(Number.isInteger(preferred))order.push(((preferred%4)+4)%4);for(let r=0;r<4;r++)if(!order.includes(r))order.push(r);
-  let best=null;for(const rotation of order){const h=homographyForRotation(markers,rotation);if(!h)continue;const sync=syncScore(image,h);if(!sync)continue;const candidate={rotation,h,...sync};if(!best||candidate.score>best.score)best=candidate;}
+function chooseRotation(image,markers,preferredRotation=null,preferredAnchorSet=null){
+  const rotations=[];if(Number.isInteger(preferredRotation))rotations.push(((preferredRotation%4)+4)%4);for(let r=0;r<4;r++)if(!rotations.includes(r))rotations.push(r);
+  const sets=[];if(preferredAnchorSet){const preferred=ANCHOR_SETS.find(s=>s.name===preferredAnchorSet);if(preferred)sets.push(preferred);}for(const set of ANCHOR_SETS)if(!sets.includes(set))sets.push(set);
+  let best=null;
+  for(const set of sets)for(const rotation of rotations){const h=homographyForRotation(markers,rotation,set.points);if(!h)continue;const sync=syncScore(image,h);if(!sync)continue;const candidate={rotation,h,anchorSet:set.name,...sync};if(!best||candidate.score>best.score)best=candidate;}
   return best&&best.accuracy>=.72?best:null;
 }
 
@@ -301,7 +311,7 @@ function decodeControl(image,h){
 export async function decodeModemWithMarkers(image,tracked,{allowDetectRotation=true}={}){
   const start=globalThis.performance?.now?.()??Date.now();const rawMarkers=tracked?.markers||tracked;
   if(!rawMarkers?.length||rawMarkers.length!==4)return null;
-  const choice=chooseRotation(image,rawMarkers,allowDetectRotation?tracked?.rotation:null);if(!choice)return null;const calibration=calibrate(image,choice.h);if(!calibration)return null;
+  const choice=chooseRotation(image,rawMarkers,allowDetectRotation?tracked?.rotation:null,tracked?.anchorSet||null);if(!choice)return null;const calibration=calibrate(image,choice.h);if(!calibration)return null;
   const states=new Uint8Array(MODEM_PAYLOAD_CELLS),rgb=[0,0,0],f=[0,0,0,0];let marginSum=0,resampled=0;
   for(let i=0;i<LAYOUT.payload.length;i++){
     const p=LAYOUT.payload[i];if(!sampleCellRgb(image,choice.h,p.x,p.y,false,rgb))return null;feature(rgb,f);let c=classifyFeature(f,calibration.centroids);
@@ -311,7 +321,7 @@ export async function decodeModemWithMarkers(image,tracked,{allowDetectRotation=
   let fec,packet;try{fec=modemStatesToPacket(states);packet=decodeOpticalPacket(fec.bytes);}catch{return null;}
   if(packet.protocolVersion!==2||packet.chunkSize!==MODEM_CHUNK_BYTES||packet.visualStates!==4)return null;
   const end=globalThis.performance?.now?.()??Date.now();
-  return{packet,bytes:fec.bytes,corrected:fec.corrected,markers:rawMarkers.map(m=>({...m})),rotation:choice.rotation,syncAccuracy:choice.accuracy,syncSeparation:choice.separation,calibrationSeparation:calibration.separation,margin:marginSum/LAYOUT.payload.length,resampled,control:decodeControl(image,choice.h),decodeMs:end-start};
+  return{packet,bytes:fec.bytes,corrected:fec.corrected,markers:rawMarkers.map(m=>({...m})),rotation:choice.rotation,anchorSet:choice.anchorSet,syncAccuracy:choice.accuracy,syncSeparation:choice.separation,calibrationSeparation:calibration.separation,margin:marginSum/LAYOUT.payload.length,resampled,control:decodeControl(image,choice.h),decodeMs:end-start};
 }
 
 export async function decodeModemFrame(image,{tracked=null,forceDetect=false}={}){
@@ -319,7 +329,7 @@ export async function decodeModemFrame(image,{tracked=null,forceDetect=false}={}
   if(tracked&&!forceDetect)markerState=refineModemMarkers(image,tracked);
   if(markerState){const decoded=await decodeModemWithMarkers(image,markerState);if(decoded)return{...decoded,detected:false};}
   const acquisition=detectModemMarkers(image);if(!acquisition)return null;detected=true;
-  markerState={markers:acquisition.markers.map(m=>({...m})),rotation:tracked?.rotation??0};
+  markerState={markers:acquisition.markers.map(m=>({...m})),rotation:tracked?.rotation??0,anchorSet:tracked?.anchorSet||null};
   const decoded=await decodeModemWithMarkers(image,markerState);return decoded?{...decoded,detected}:null;
 }
 
