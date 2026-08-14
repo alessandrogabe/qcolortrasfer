@@ -31,7 +31,9 @@ Sono inoltre implementazioni originali qcolortrasfer/MIT:
 - il sampler prospettico tracked e il detector bypass;
 - la modulazione dual-QR a 4 stati;
 - la ricostruzione del QR cromatico C1 dalla geometria del QR base;
-- il profilo sperimentale 8 stati / 3 canali.
+- il profilo sperimentale 8 stati / 3 canali;
+- MAIN COLOR, in cui la luminanza resta un QR standard valido e un bit fountain aggiuntivo è modulato cromaticamente nelle stesse celle;
+- OPTICAL MODEM v3.2, inclusi formato 192×108, fiducial SYNC, detector dedicato, calibrazione colore per frame, header di controllo, classificatore cromatico, interleaving/FEC e pipeline RX/TX dedicata.
 
 ## qrcode 1.5.4
 Repository: https://github.com/soldair/node-qrcode
@@ -55,4 +57,16 @@ License: Apache License 2.0.
 Repository: https://github.com/sz3/libcimbar
 License: MPL-2.0.
 
-Riferimento concettuale per codici ottici a colori. Nessun sorgente MPL viene incorporato nel progetto MIT.
+Riferimento concettuale per codici ottici a colori. In particolare, durante la progettazione di OPTICAL MODEM v3.2 sono stati studiati a livello architetturale i concetti generali di griglia di tile/celle cromatiche, protezione FEC, interleaving e combinazione con un fountain code. **Nessun sorgente MPL-2.0 di libcimbar è copiato, tradotto, adattato o incorporato** nel motore qcolortrasfer.
+
+## Complementary Color Barcode / Optical Camera Communication research
+
+La letteratura pubblica sui Complementary Color Barcode e sui sistemi Optical Camera Communication è stata usata come riferimento concettuale per l'impiego di simboli/pilot noti, stima del canale e calibrazione cromatica per-frame nelle comunicazioni display→camera.
+
+OPTICAL MODEM implementa autonomamente tali principi con fiducial, sequenza SYNC e patch R/G/B/M proprie. Nessun sorgente di implementazioni di terzi è incorporato.
+
+## ChromaCode
+
+ChromaCode è stato studiato come ulteriore riferimento concettuale per la modulazione cromatica nelle comunicazioni screen-to-camera e per i relativi obiettivi di throughput.
+
+La codifica, il formato frame, il detector, il FEC, la palette e il decoder di OPTICAL MODEM v3.2 sono implementazioni originali qcolortrasfer/MIT; nessun codice ChromaCode è copiato o adattato.
