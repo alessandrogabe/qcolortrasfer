@@ -1,12 +1,17 @@
-// qcolortrasfer v2.6 Decimen + AUX Repair side channel.
+// qcolortrasfer v2.6.1 Decimen + AUX Repair side channel.
 //
 // This module intentionally leaves the existing DECIMEN CLASSIC sender intact.
 // When AUX REPAIR is enabled, a second low-density B/W QR sends systematic
 // source-block stripes in parallel. The receiver can inject a completed block
 // directly into the main LT peeling decoder.
+//
+// V2.6.1 keeps the helper QR geometry fixed for the whole session. QAR1's final
+// stripe can be shorter than AUX_STRIPE_BYTES, but the optical payload is padded
+// to the maximum helper packet size before QR encoding. QAR1 still carries the
+// real payload length and CRC, so the receiver ignores the optical-only padding.
 
 import { packFileContainerV2, randomStreamId, sha256Hex } from './protocol.js';
-import { encodeAuxRepairPacket, AUX_STRIPE_BYTES } from './aux-repair.js';
+import { encodeAuxRepairPacket, AUX_HEADER_BYTES, AUX_STRIPE_BYTES } from './aux-repair.js';
 import { MAX_HIGH_THROUGHPUT_CHUNK } from './high-throughput.js';
 
 const AUX_QR_ECC = 'M';
@@ -14,11 +19,22 @@ const AUX_QR_MASK = 4;
 const AUX_QR_MARGIN = 4;
 const AUX_LOOKAHEAD = 2;
 const AUX_MAX_DPR = 4;
+const AUX_PACKET_CRC_BYTES = 4;
+const AUX_OPTICAL_PACKET_BYTES = AUX_HEADER_BYTES + AUX_STRIPE_BYTES + AUX_PACKET_CRC_BYTES;
 
 let qrPromise = null;
 async function getQrCode() {
   if (!qrPromise) qrPromise = import('https://esm.sh/qrcode@1.5.4?bundle').then(mod => mod.default || mod);
   return qrPromise;
+}
+
+export function padAuxPacketForOpticalQr(bytes) {
+  if (!(bytes instanceof Uint8Array)) throw new TypeError('AUX QR payload must be Uint8Array');
+  if (bytes.length > AUX_OPTICAL_PACKET_BYTES) throw new Error(`AUX QR packet ${bytes.length} B > fixed optical envelope ${AUX_OPTICAL_PACKET_BYTES} B`);
+  if (bytes.length === AUX_OPTICAL_PACKET_BYTES) return bytes;
+  const padded = new Uint8Array(AUX_OPTICAL_PACKET_BYTES);
+  padded.set(bytes);
+  return padded;
 }
 
 function installAuxRepairUi() {
@@ -121,7 +137,8 @@ function installAuxRepairUi() {
 
   async function createAuxRaster(bytes) {
     const QRCode = await getQrCode();
-    const qr = QRCode.create([{ data: bytes, mode: 'byte' }], { errorCorrectionLevel: AUX_QR_ECC, maskPattern: AUX_QR_MASK });
+    const opticalBytes = padAuxPacketForOpticalQr(bytes);
+    const qr = QRCode.create([{ data: opticalBytes, mode: 'byte' }], { errorCorrectionLevel: AUX_QR_ECC, maskPattern: AUX_QR_MASK });
     const modules = qr.modules.size;
     const size = modules + AUX_QR_MARGIN * 2;
     const pixels = new Uint8ClampedArray(size * size * 4);
@@ -164,7 +181,7 @@ function installAuxRepairUi() {
     const stripeCount = session ? Math.ceil(session.chunkSize / session.stripeSize) : 0;
     const version = current?.raster?.version ?? currentRaster?.version ?? '—';
     const scaleText = scale ?? '—';
-    auxStats.textContent = `AUX REPAIR · QAR1 · ${session?.stripeSize || AUX_STRIPE_BYTES} B/stripe · ${fps} fps · QR V${version} ECC M · scala ×${scaleText} · ${actual} helper/s · queue ${queue.length}/${AUX_LOOKAHEAD} · miss ${misses} · ciclo blocco ${session ? session.blockIndex + 1 : '—'}/${session?.sourceCount || '—'} stripe ${session ? session.stripeIndex + 1 : '—'}/${stripeCount || '—'}`;
+    auxStats.textContent = `AUX REPAIR · QAR1 · ${session?.stripeSize || AUX_STRIPE_BYTES} B/stripe · ${fps} fps · QR V${version} ECC M · geometria fissa · scala ×${scaleText} · ${actual} helper/s · queue ${queue.length}/${AUX_LOOKAHEAD} · miss ${misses} · ciclo blocco ${session ? session.blockIndex + 1 : '—'}/${session?.sourceCount || '—'} stripe ${session ? session.stripeIndex + 1 : '—'}/${stripeCount || '—'}`;
   }
 
   async function prepareSession(force = false) {
