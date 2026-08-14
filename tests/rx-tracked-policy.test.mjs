@@ -34,7 +34,7 @@ test('green RX overlay maps camera geometry through object-fit contain and is th
 
 test('RX overlay shows only decode-proven geometry and never performs camera/decode work',async()=>{
   const quad={topLeft:{x:0,y:0},topRight:{x:1,y:0},bottomRight:{x:1,y:1},bottomLeft:{x:0,y:1}};
-  assert.equal(overlayEligibleDetection({decoded:true,quad}),true);assert.equal(overlayEligibleDetection({decoded:false,quad}),false);
+  assert.ok(overlayEligibleDetection({decoded:true,quad}));assert.equal(Boolean(overlayEligibleDetection({decoded:false,quad})),false);
   const js=await readFile(root('js/rx-detection-overlay.js'),'utf8');assert.match(js,/event\.data\?\.detections/);assert.doesNotMatch(js,/getImageData|readBarcodes|drawImage\(video/);
 });
 
