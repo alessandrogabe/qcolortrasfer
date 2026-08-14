@@ -1,21 +1,26 @@
 // Portable multi-QR + chromatic decoder worker.
 //
-// V2 separates expensive acquisition from the hot path:
-// - full: occasional whole-frame ZXing search, including position sightings;
-// - crop: one tracked QR, with rotation/inversion/downscale searches disabled;
-// - chroma: rebuilds C1/C2 from the already-known base geometry, then asks
-//   ZXing to decode a clean synthetic QR in isPure mode (no second locator).
+// V2.5 has three decode paths:
+// - full: occasional whole-frame ZXing acquisition, including sightings;
+// - crop fallback: one ROI through the ordinary ZXing detector;
+// - tracked: if a previous crop established quad + module count, perspective-
+//   sample that known grid directly and decode a clean synthetic QR in isPure
+//   mode. The expensive finder/detector stage is skipped entirely.
+//
+// The tracked sampler is original qcolortrasfer/MIT code. It implements the
+// general geometry principle independently; no Decimen >=0.4 source is used.
 
 import {
   chromaScoreA, chromaScoreB, clusterColorScores, classifyColorScore
 } from './color-code.js';
 import { FLAG_COLOR_8, FLAG_V2_COLOR_8, MAGIC, MAGIC_V2 } from './protocol.js';
 import { detectionBoxFromPosition } from './rx-roi.js';
+import { sampleTrackedQr, shiftQuad, modulesFromVersion, versionFromModules } from './tracked-qr.js';
 
 const ZXING_MODULE_URL = 'https://esm.sh/zxing-wasm@2.0.0/reader?bundle';
 const ZXING_WASM_URL = 'https://cdn.jsdelivr.net/npm/zxing-wasm@2.0.0/dist/reader/zxing_reader.wasm';
 const QR_MODULE_URL = 'https://esm.sh/qrcode@1.5.4?bundle';
-const MAX_FULL_SYMBOLS = 8;
+const MAX_FULL_SYMBOLS = 12;
 const QR_ECC = 'L';
 const QR_MASK = 4;
 const SYNTH_MARGIN = 4;
@@ -72,15 +77,11 @@ function parsePositiveInt(value) {
   if (Number.isInteger(value) && value > 0) return value;
   const match = String(value ?? '').match(/\d+/); return match ? Number(match[0]) : 0;
 }
-function versionFromModules(modules) {
-  const version = (modules - 17) / 4;
-  return Number.isInteger(version) && version >= 1 && version <= 40 ? version : 0;
-}
 function versionOf(result) {
-  let version = parsePositiveInt(result.version);
+  let version = parsePositiveInt(result?.version);
   if (version >= 1 && version <= 40) return version;
-  try { const extra = JSON.parse(result.extra || '{}'); version = parsePositiveInt(extra.Version); if (version >= 1 && version <= 40) return version; } catch {}
-  return versionFromModules(Number(result.symbol?.width || 0));
+  try { const extra = JSON.parse(result?.extra || '{}'); version = parsePositiveInt(extra.Version); if (version >= 1 && version <= 40) return version; } catch {}
+  return versionFromModules(Number(result?.symbol?.width || 0));
 }
 
 async function templateFor(version) {
@@ -120,21 +121,35 @@ function moduleColorScores(image,h,gx,gy) {
   for (const [ox,oy] of offsets) { const p=mapPoint(h,gx+ox,gy+oy); if(!p||p[0]<0||p[0]>=image.width||p[1]<0||p[1]>=image.height)return null; const [a,b]=pixelScores(image,p[0],p[1]); sumA+=a; sumB+=b; }
   return [sumA/offsets.length,sumB/offsets.length];
 }
+
+function quadFromPosition(position, originX=0, originY=0) {
+  if (!position) return null;
+  return shiftQuad(position, originX, originY);
+}
 function resultDetection(result, originX=0, originY=0, decoded=true) {
-  const box=detectionBoxFromPosition(result?.position,originX,originY); return box?{...box,version:versionOf(result),decoded}:null;
+  const box=detectionBoxFromPosition(result?.position,originX,originY); if(!box)return null;
+  const version=versionOf(result), modules=modulesFromVersion(version), quad=quadFromPosition(result?.position,originX,originY);
+  return {...box,version,modules,quad,decoded};
+}
+function detectionFromTracked(quad, modules, decoded=true) {
+  const box=detectionBoxFromPosition(quad,0,0); if(!box)return null;
+  return {...box,quad,modules,version:versionFromModules(modules),decoded};
 }
 
-async function reconstructChroma(result,image) {
-  if(!isQct(result.bytes))return null; const version=versionOf(result); if(!version||!result.position)return null;
-  const template=await templateFor(version), modules=template.modules, p=result.position;
+async function reconstructChromaGeometry(bytes,version,position,image) {
+  if(!isQct(bytes)||!version||!position)return null;
+  const template=await templateFor(version), modules=template.modules, p=position;
   const h=homography([[0,0],[modules,0],[0,modules],[modules,modules]],[[p.topLeft.x,p.topLeft.y],[p.topRight.x,p.topRight.y],[p.bottomLeft.x,p.bottomLeft.y],[p.bottomRight.x,p.bottomRight.y]]); if(!h)return null;
   const scoresA=[],scoresB=[],dataIndices=[];
   for(let y=0;y<modules;y++)for(let x=0;x<modules;x++){const index=y*modules+x;if(template.reserved[index])continue;const scores=moduleColorScores(image,h,x,y);if(!scores)return null;scoresA.push(scores[0]);scoresB.push(scores[1]);dataIndices.push(index);}
-  const clustersA=clusterColorScores(scoresA,COLOR_MIN_SEPARATION_A); const eight=usesEightStates(result.bytes); const clustersB=eight?clusterColorScores(scoresB,COLOR_MIN_SEPARATION_B):null;
+  const clustersA=clusterColorScores(scoresA,COLOR_MIN_SEPARATION_A); const eight=usesEightStates(bytes); const clustersB=eight?clusterColorScores(scoresB,COLOR_MIN_SEPARATION_B):null;
   const bitsA=clustersA?template.bits.slice():null,bitsB=clustersB?template.bits.slice():null;
   if(bitsA)for(let i=0;i<dataIndices.length;i++)bitsA[dataIndices[i]]=classifyColorScore(scoresA[i],clustersA);
   if(bitsB)for(let i=0;i<dataIndices.length;i++)bitsB[dataIndices[i]]=classifyColorScore(scoresB[i],clustersB);
   return {modules,a:bitsA?{bits:bitsA,modules,separation:clustersA.separation}:null,b:bitsB?{bits:bitsB,modules,separation:clustersB.separation}:null,eight};
+}
+async function reconstructChroma(result,image) {
+  return reconstructChromaGeometry(result?.bytes,versionOf(result),result?.position,image);
 }
 
 function syntheticImage(item) {
@@ -145,26 +160,58 @@ function syntheticImage(item) {
   }
   return new ImageData(data,size,size);
 }
-async function decodeSynthetic(reader,matrices) {
+async function decodeSyntheticResults(reader,matrices) {
   const out=[];
-  for(const matrix of matrices){const results=await reader.readBarcodes(syntheticImage(matrix),PURE_OPTIONS);const hit=results.find(item=>item.isValid&&item.bytes?.length>0&&isQct(item.bytes));if(hit)out.push(hit.bytes);}
+  for(const matrix of matrices){const results=await reader.readBarcodes(syntheticImage(matrix),PURE_OPTIONS);const hit=results.find(item=>item.isValid&&item.bytes?.length>0&&isQct(item.bytes));if(hit)out.push(hit);}
   return out;
+}
+async function decodeSynthetic(reader,matrices) { return (await decodeSyntheticResults(reader,matrices)).map(item=>item.bytes); }
+
+async function tryTrackedBase(reader,image,trackedQuad,trackedModules,originX,originY) {
+  if(!trackedQuad||!(trackedModules>0))return null;
+  const localQuad=shiftQuad(trackedQuad,-originX,-originY); if(!localQuad)return null;
+  const sampled=sampleTrackedQr(image,localQuad,trackedModules); if(!sampled)return null;
+  const hits=await decodeSyntheticResults(reader,[sampled]);
+  const hit=hits[0]; if(!hit)return null;
+  return {bytes:hit.bytes,localQuad,globalQuad:trackedQuad,modules:trackedModules,separation:sampled.separation};
 }
 
 self.onmessage=async event=>{
-  const {id,buf,w,h,mode='full',regionId=null,originX=0,originY=0,decodeColor=mode==='crop'}=event.data||{};
+  const {id,buf,w,h,mode='full',regionId=null,originX=0,originY=0,decodeColor=mode==='crop',trackedQuad=null,trackedModules=0}=event.data||{};
+  let trackedAttempted=false,trackedHit=false,trackedSeparation=0;
   try{
     const reader=await getReader(); const image=new ImageData(new Uint8ClampedArray(buf),w,h);
-    const results=await reader.readBarcodes(image,mode==='crop'?CROP_OPTIONS:FULL_OPTIONS);
-    const base=results.filter(item=>item.isValid&&item.bytes?.length>0&&isQct(item.bytes));
-    const baseSet=new Set(base); const symbols=base.map(item=>item.bytes);
-    const detections=results.map(item=>resultDetection(item,originX,originY,baseSet.has(item))).filter(Boolean);
+    let results=[],base=[],detections=[],symbols=[];
+    let tracked=null;
+    if(mode==='crop'&&trackedQuad&&trackedModules>0){
+      trackedAttempted=true;
+      tracked=await tryTrackedBase(reader,image,trackedQuad,trackedModules,originX,originY);
+      if(tracked){
+        trackedHit=true; trackedSeparation=tracked.separation;
+        base=[{bytes:tracked.bytes,position:tracked.localQuad,version:versionFromModules(tracked.modules)}];
+        symbols=[tracked.bytes];
+        const detection=detectionFromTracked(tracked.globalQuad,tracked.modules,true);if(detection)detections=[detection];
+      }
+    }
+    if(!trackedHit){
+      results=await reader.readBarcodes(image,mode==='crop'?CROP_OPTIONS:FULL_OPTIONS);
+      base=results.filter(item=>item.isValid&&item.bytes?.length>0&&isQct(item.bytes));
+      const baseSet=new Set(base); symbols=base.map(item=>item.bytes);
+      detections=results.map(item=>resultDetection(item,originX,originY,baseSet.has(item))).filter(Boolean);
+    }
+
     const matricesA=[],matricesB=[];let sepA=0,sepB=0,eightBase=0;
-    if(decodeColor){for(const result of base){const reconstructed=await reconstructChroma(result,image);if(!reconstructed)continue;if(reconstructed.eight)eightBase++;if(reconstructed.a){matricesA.push(reconstructed.a);sepA+=reconstructed.a.separation;}if(reconstructed.b){matricesB.push(reconstructed.b);sepB+=reconstructed.b.separation;}}}
-    else eightBase=base.reduce((count,item)=>count+(usesEightStates(item.bytes)?1:0),0);
+    if(decodeColor){
+      for(const result of base){
+        const reconstructed=trackedHit
+          ? await reconstructChromaGeometry(result.bytes,versionFromModules(tracked.modules),tracked.localQuad,image)
+          : await reconstructChroma(result,image);
+        if(!reconstructed)continue;if(reconstructed.eight)eightBase++;if(reconstructed.a){matricesA.push(reconstructed.a);sepA+=reconstructed.a.separation;}if(reconstructed.b){matricesB.push(reconstructed.b);sepB+=reconstructed.b.separation;}
+      }
+    } else eightBase=base.reduce((count,item)=>count+(usesEightStates(item.bytes)?1:0),0);
     const colorA=decodeColor?await decodeSynthetic(reader,matricesA):[],colorB=decodeColor?await decodeSynthetic(reader,matricesB):[]; symbols.push(...colorA,...colorB);
-    self.postMessage({id,mode,regionId,detections,symbols,baseCount:base.length,eightBase,color1Candidates:matricesA.length,color1Count:colorA.length,color1Separation:matricesA.length?sepA/matricesA.length:0,color2Candidates:matricesB.length,color2Count:colorB.length,color2Separation:matricesB.length?sepB/matricesB.length:0,error:null});
-  }catch(error){self.postMessage({id,mode,regionId,detections:[],symbols:[],baseCount:0,eightBase:0,color1Candidates:0,color1Count:0,color1Separation:0,color2Candidates:0,color2Count:0,color2Separation:0,error:error?.message||String(error)});}
+    self.postMessage({id,mode,regionId,detections,symbols,baseCount:base.length,eightBase,color1Candidates:matricesA.length,color1Count:colorA.length,color1Separation:matricesA.length?sepA/matricesA.length:0,color2Candidates:matricesB.length,color2Count:colorB.length,color2Separation:matricesB.length?sepB/matricesB.length:0,trackedAttempted,trackedHit,trackedSeparation,error:null});
+  }catch(error){self.postMessage({id,mode,regionId,detections:[],symbols:[],baseCount:0,eightBase:0,color1Candidates:0,color1Count:0,color1Separation:0,color2Candidates:0,color2Count:0,color2Separation:0,trackedAttempted,trackedHit:false,trackedSeparation,error:error?.message||String(error)});}
 };
 
 void Promise.all([getReader(),getQrCode()]).then(()=>self.postMessage({id:-1,ready:true,symbols:[],detections:[],error:null})).catch(error=>self.postMessage({id:-1,ready:false,symbols:[],detections:[],error:error?.message||String(error)}));
