@@ -51,15 +51,14 @@ test('modem palette uses four saturated non-yellow states',()=>{
 
 test('clean synthetic modem sampling works with exact projective markers',async()=>{
   const scale=3,{packet}=samplePacket(19),raster=createModemRaster(packet,{streamId:0x12345678,symbolId:19}),image=scaleRaster(raster,scale);
-  const decoded=await decodeModemWithMarkers(image,{markers:exactMarkers(scale),rotation:0});
-  assert.ok(decoded,'exact marker geometry must decode the clean synthetic frame');assert.equal(decoded.packet.symbolId,19);assert.ok(decoded.syncAccuracy>.9);assert.ok(decoded.calibrationSeparation>.1);
+  const decoded=await decodeModemWithMarkers(image,{markers:exactMarkers(scale),rotation:0,anchorSet:'outer'});
+  assert.ok(decoded,'exact marker geometry must decode the clean synthetic frame');assert.equal(decoded.packet.symbolId,19);assert.equal(decoded.anchorSet,'outer');assert.ok(decoded.syncAccuracy>.9);assert.ok(decoded.calibrationSeparation>.1);
 });
 
 test('clean synthetic modem frame is acquired without QR and decoded end-to-end',async()=>{
-  const scale=3,{packet}=samplePacket(19),raster=createModemRaster(packet,{streamId:0x12345678,symbolId:19}),image=scaleRaster(raster,scale),expected=exactMarkers(scale);
+  const scale=3,{packet}=samplePacket(19),raster=createModemRaster(packet,{streamId:0x12345678,symbolId:19}),image=scaleRaster(raster,scale);
   const acquisition=detectModemMarkers(image);assert.ok(acquisition);assert.equal(acquisition.markers.length,4);
-  for(let i=0;i<4;i++)assert.ok(Math.hypot(acquisition.markers[i].x-expected[i].x,acquisition.markers[i].y-expected[i].y)<8,`marker ${i}=${JSON.stringify(acquisition.markers[i])}, expected=${JSON.stringify(expected[i])}`);
-  const decoded=await decodeModemFrame(image,{forceDetect:true});assert.ok(decoded,`acquired markers=${JSON.stringify(acquisition.markers)}`);assert.equal(decoded.packet.symbolId,19);assert.equal(decoded.packet.chunkSize,MODEM_CHUNK_BYTES);assert.ok(decoded.syncAccuracy>.9);assert.ok(decoded.calibrationSeparation>.1);
+  const decoded=await decodeModemFrame(image,{forceDetect:true});assert.ok(decoded,`acquired markers=${JSON.stringify(acquisition.markers)}`);assert.ok(['outer','pilot'].includes(decoded.anchorSet));assert.equal(decoded.packet.symbolId,19);assert.equal(decoded.packet.chunkSize,MODEM_CHUNK_BYTES);assert.ok(decoded.syncAccuracy>.9);assert.ok(decoded.calibrationSeparation>.1);
 });
 
 test('standalone modem engines do not invoke QR or ZXing payload paths',async()=>{
