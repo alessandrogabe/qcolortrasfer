@@ -6,6 +6,7 @@
 const LN2 = 0.6931471805599453;
 const SOLITON_C = 0.1;
 const SOLITON_DELTA = 0.5;
+const decoderRegistry = new Set();
 
 export function splitmix32(seed) {
   let s = seed | 0;
@@ -115,6 +116,14 @@ export class FountainEncoder {
     this.cdf = solitonCdf(this.sourceCount);
   }
 
+  sourceBlock(blockIndex) {
+    if (!Number.isInteger(blockIndex) || blockIndex < 0 || blockIndex >= this.sourceCount) throw new Error('Source block index out of range');
+    const out = new Uint8Array(this.chunkSize);
+    const source = new Uint8Array(this.blocks.buffer, blockIndex * this.words * 4, this.chunkSize);
+    out.set(source);
+    return out;
+  }
+
   symbol(symbolId) {
     const indices = frameIndices(this.sourceCount, this.cdf, this.sessionId, symbolId >>> 0);
     const out = new Uint32Array(this.words);
@@ -143,6 +152,8 @@ export class FountainDecoder {
     this.solvedCount = 0;
     this.framesNew = 0;
     this.framesDup = 0;
+    this.createdAt = globalThis.performance?.now?.() ?? Date.now();
+    decoderRegistry.add(this);
   }
 
   get complete() { return this.solvedCount >= this.sourceCount; }
@@ -170,6 +181,16 @@ export class FountainDecoder {
       if (!waiting) { waiting = new Set(); this.byBlock.set(block, waiting); }
       waiting.add(pending);
     }
+    return true;
+  }
+
+  injectSourceBlock(blockIndex, data) {
+    if (!Number.isInteger(blockIndex) || blockIndex < 0 || blockIndex >= this.sourceCount) return false;
+    if (!(data instanceof Uint8Array) || data.length !== this.chunkSize) return false;
+    if (this.solved[blockIndex]) return false;
+    const words = new Uint32Array(this.words);
+    new Uint8Array(words.buffer).set(data);
+    this.#resolve(blockIndex, words);
     return true;
   }
 
@@ -205,4 +226,14 @@ export class FountainDecoder {
     }
     return out;
   }
+}
+
+export function findCompatibleFountainDecoder(sourceCount, chunkSize, fileLength, minCreatedAt = -Infinity) {
+  let best = null;
+  for (const decoder of decoderRegistry) {
+    if (decoder.sourceCount !== sourceCount || decoder.chunkSize !== chunkSize || decoder.fileLength !== fileLength) continue;
+    if (decoder.createdAt < minCreatedAt) continue;
+    if (!best || decoder.createdAt > best.createdAt) best = decoder;
+  }
+  return best;
 }
