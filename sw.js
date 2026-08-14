@@ -16,7 +16,7 @@ const CORE = [
   './js/rx-performance-policy.js', './js/rx-detection-overlay.js', './js/rx-chroma-worker-bridge.js',
   './js/tx-profile-policy.js', './js/tx-aux-repair-v2.js', './js/tx-chroma-fountain.js', './js/tx-dual-main-color.js',
   './js/chroma-fountain.js', './js/chroma-fast-decoder.js', './js/chroma-tx-worker.js', './js/chroma/qr-worker.js',
-  './js/optical-modem-codec.js', './js/optical-modem-tx-worker.js', './js/optical-modem-tx.js', './js/optical-modem-worker.js', './js/optical-modem-rx.js',
+  './js/optical-modem-codec.js', './js/optical-modem-detector.js', './js/optical-modem-tx-worker.js', './js/optical-modem-tx.js', './js/optical-modem-worker.js', './js/optical-modem-rx.js',
   './js/app.js', './js/crc32.js', './js/fountain.js', './js/protocol.js', './js/aux-repair.js', './js/optical.js',
   './js/color-code.js', './js/adaptive-scheduler.js', './js/high-throughput.js', './js/tx-worker.js',
   './js/rx-roi.js', './js/tracked-qr.js', './js/tracked-phase.js', './js/qr-worker.js'
