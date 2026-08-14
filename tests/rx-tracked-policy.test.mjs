@@ -54,9 +54,9 @@ test('multi QR optical view keeps smooth final CSS scaling while Classic and AUX
   assert.match(classic, /canvas\.style\.imageRendering = 'pixelated'/);
 });
 
-test('PWA v2.6 precaches tracked sampler, Classic policy and AUX runtime', async () => {
+test('PWA v2.6.1 precaches tracked sampler, Classic policy and AUX runtime', async () => {
   const sw = await readFile(root('sw.js'), 'utf8');
-  assert.match(sw, /v2\.6\.0-decimen-aux-repair/);
+  assert.match(sw, /v2\.6\.1-aux-fixed-geometry/);
   assert.match(sw, /\.\/js\/tracked-qr\.js/);
   assert.match(sw, /\.\/js\/tx-profile-policy\.js/);
   assert.match(sw, /\.\/js\/tx-aux-repair\.js/);
