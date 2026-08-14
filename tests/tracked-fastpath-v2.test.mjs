@@ -17,7 +17,9 @@ test('tracked sampler re-anchors a stale quad before sampling the full grid',()=
   const stale={topLeft:{x:image.originX-2,y:image.originY-1},topRight:{x:right-2,y:image.originY-1},bottomLeft:{x:image.originX-2,y:bottom-1},bottomRight:{x:right-2,y:bottom-1}};
   const sampled=sampleTrackedQrCandidates(image,stale,modules);assert.ok(sampled);assert.ok(sampled.anchorScore>=120);
   assert.ok(Math.abs(sampled.offset.x)<=3.5);assert.ok(Math.abs(sampled.offset.y)<=3.5);
-  const uniform=sampled.candidates.find(c=>c.kind==='uniform');let same=0;for(let i=0;i<bits.length;i++)if(bits[i]===uniform.bits[i])same++;assert.ok(same/bits.length>0.97);
+  const uniform=sampled.candidates.find(c=>c.kind==='uniform');let same=0;for(let i=0;i<bits.length;i++)if(bits[i]===uniform.bits[i])same++;
+  const ratio=same/bits.length;
+  assert.ok(ratio>0.97,`agreement=${ratio.toFixed(4)} anchor=${sampled.anchorScore} sep=${sampled.separatorScore} offsets=${JSON.stringify(sampled.finderOffsets)} refined=${JSON.stringify(sampled.refinedQuad)}`);
 });
 
 test('AUX AUTO reduces helper count when pixels per module would be too low',()=>{const roomy=chooseAuxLayoutV2(430,800,3,77);assert.ok(roomy.count>=2);assert.ok(roomy.devicePxPerCell>=3.35);const cramped=chooseAuxLayoutV2(300,430,1,77);assert.equal(cramped.count,1);assert.ok(cramped.count<=roomy.count);});
