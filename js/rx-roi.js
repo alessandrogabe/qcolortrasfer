@@ -1,24 +1,26 @@
 // qcolortrasfer receiver ROI scheduler.
 //
-// Original qcolortrasfer/MIT implementation of the common high-throughput
-// optical pattern: acquire code positions from occasional full-frame scans,
-// then spend most decode work on small crops. Regions expire quickly and full
-// scans accelerate whenever the expected grid is degraded.
+// Original qcolortrasfer/MIT implementation of a high-throughput optical
+// pattern: acquire code positions from occasional full-frame scans, then spend
+// most work on small crops. V2.5 keeps decoded geometry (quad + module count),
+// estimates motion drift, expands crops in the direction-independent safety
+// envelope and gives recovery scans priority over crop work.
 
 export const ROI_MAX_REGIONS = 9;
-export const ROI_TTL_MS = 1600;
+export const ROI_TTL_MS = 1500;
 export const ROI_ACQUIRE_SCAN_MS = 100;
 export const ROI_WARM_SCAN_MS = 180;
 export const ROI_WARMUP_MS = 2800;
 export const ROI_DEGRADED_SCAN_MS = 250;
 export const ROI_LOCKED_SCAN_MS = 1500;
-export const ROI_PAD_RATIO = 0.30;
+export const ROI_EXPECTED_DECAY_MS = 10000;
+export const ROI_PAD_RATIO = 0.35;
 export const ROI_MIN_PAD_PX = 12;
+export const ROI_FULL_SCAN_PRIORITY_MS = 10;
 
-// hardwareConcurrency is only a browser hint and on iOS/Android may be privacy-
-// capped below the number of useful logical execution resources. Production can
-// temporarily set __QCOLOR_RX_WORKER_TARGET during START RX; the unit/self-test
-// path remains deterministic when no override is present.
+// hardwareConcurrency is a hint. A browser-side policy may temporarily set an
+// explicit target before app.js creates the pool; absent an override we honor
+// the reported count but never exceed six.
 export function workerCountForHardware(hardwareConcurrency) {
   const override = Math.floor(Number(globalThis.__QCOLOR_RX_WORKER_TARGET));
   if (Number.isFinite(override) && override > 0) return Math.max(2, Math.min(6, override));
@@ -62,7 +64,11 @@ export function sameRegion(a, b) {
 }
 
 export function paddedCrop(box, frameWidth, frameHeight, padRatio = ROI_PAD_RATIO) {
-  const pad = Math.max(ROI_MIN_PAD_PX, Math.max(box.w, box.h) * padRatio);
+  const size = Math.max(box.w, box.h);
+  const drift = Math.max(0, Number(box?.drift) || 0);
+  // Base margin plus twice the recently observed displacement, capped at one
+  // code size. A handheld crop therefore leads motion instead of chasing it.
+  const pad = Math.max(ROI_MIN_PAD_PX, size * padRatio + Math.min(size, 2 * drift));
   const x0 = Math.max(0, Math.floor(box.x - pad));
   const y0 = Math.max(0, Math.floor(box.y - pad));
   const x1 = Math.min(frameWidth, Math.ceil(box.x + box.w + pad));
@@ -76,11 +82,18 @@ export class RoiTracker {
     this.regions = [];
     this.nextId = 1;
     this.peakRegions = 0;
+    this.expectedRegions = 0;
+    this.expectedRegionsAt = -Infinity;
     this.lastFullScanAt = -Infinity;
     this.firstConfirmedAt = null;
   }
   prune(now) {
     this.regions = this.regions.filter(region => region.inFlight || now - region.lastSeen <= ROI_TTL_MS);
+    const confirmed = this.confirmedCount();
+    if (confirmed >= this.expectedRegions || now - this.expectedRegionsAt > ROI_EXPECTED_DECAY_MS) {
+      this.expectedRegions = confirmed;
+      this.expectedRegionsAt = now;
+    }
     return this.regions;
   }
   active(now) { this.prune(now); return this.regions; }
@@ -100,10 +113,14 @@ export class RoiTracker {
         if (score > bestScore) { bestScore = score; match = region; }
       }
       if (match) {
-        // A failed/sighting-only detection may keep a region alive but cannot
-        // drag a decode-proven crop to a noisy detector box.
+        // A failed/sighting-only detection can keep the crop alive but cannot
+        // move a geometry established by a real decoded QR.
         match.lastSeen = now;
         if (decoded) {
+          const oldCx = match.x + match.w / 2, oldCy = match.y + match.h / 2;
+          const newCx = detection.x + detection.w / 2, newCy = detection.y + detection.h / 2;
+          const displacement = Math.hypot(newCx - oldCx, newCy - oldCy);
+          match.drift = 0.5 * (match.drift || 0) + 0.5 * displacement;
           const keep = 0.25, fresh = 0.75;
           match.x = match.x * keep + detection.x * fresh;
           match.y = match.y * keep + detection.y * fresh;
@@ -111,6 +128,9 @@ export class RoiTracker {
           match.h = match.h * keep + detection.h * fresh;
           match.confirmed = true;
           match.hits++;
+          if (detection.quad) match.quad = detection.quad;
+          if (detection.modules > 0) match.modules = detection.modules;
+          if (detection.version > 0) match.version = detection.version;
           if (this.firstConfirmedAt == null) this.firstConfirmedAt = now;
         }
         continue;
@@ -124,7 +144,10 @@ export class RoiTracker {
       }
       this.regions.push({
         id: this.nextId++, x: detection.x, y: detection.y, w: detection.w, h: detection.h,
-        lastSeen: now, lastSubmitted: -Infinity, inFlight: false, hits: decoded ? 1 : 0, confirmed: decoded
+        lastSeen: now, lastSubmitted: -Infinity, inFlight: false, hits: decoded ? 1 : 0,
+        confirmed: decoded, drift: 0, quad: decoded ? detection.quad || null : null,
+        modules: decoded ? Number(detection.modules) || 0 : 0,
+        version: decoded ? Number(detection.version) || 0 : 0,
       });
       if (decoded && this.firstConfirmedAt == null) this.firstConfirmedAt = now;
     }
@@ -133,7 +156,12 @@ export class RoiTracker {
       this.regions.sort((a, b) => Number(b.confirmed) - Number(a.confirmed) || (b.hits - a.hits) || (b.lastSeen - a.lastSeen));
       this.regions.length = ROI_MAX_REGIONS;
     }
-    this.peakRegions = Math.max(this.peakRegions, this.confirmedCount());
+    const confirmed = this.confirmedCount();
+    this.peakRegions = Math.max(this.peakRegions, confirmed);
+    if (confirmed > this.expectedRegions) {
+      this.expectedRegions = confirmed;
+      this.expectedRegionsAt = now;
+    }
     return this.regions;
   }
 
@@ -144,13 +172,18 @@ export class RoiTracker {
     let interval;
     if (confirmed === 0) interval = ROI_ACQUIRE_SCAN_MS;
     else if (warmAcquire && this.firstConfirmedAt != null && now - this.firstConfirmedAt < ROI_WARMUP_MS) interval = ROI_WARM_SCAN_MS;
-    else interval = confirmed < this.peakRegions ? ROI_DEGRADED_SCAN_MS : ROI_LOCKED_SCAN_MS;
+    else if (confirmed < this.expectedRegions) interval = ROI_DEGRADED_SCAN_MS;
+    else interval = ROI_LOCKED_SCAN_MS;
     return now - this.lastFullScanAt >= interval;
   }
   noteFullScan(now) { this.lastFullScanAt = now; }
 
   chooseForCrops(maxCount, now) {
     this.prune(now);
+    // app.js asks for crops immediately after submitting a due full scan. By
+    // returning none in the same capture we give reacquisition true priority,
+    // matching the behavior that performs best on multi-code scenes.
+    if (now - this.lastFullScanAt < ROI_FULL_SCAN_PRIORITY_MS) return [];
     return this.regions
       .filter(region => !region.inFlight)
       .sort((a, b) => Number(b.confirmed) - Number(a.confirmed) || a.lastSubmitted - b.lastSubmitted || b.lastSeen - a.lastSeen)
