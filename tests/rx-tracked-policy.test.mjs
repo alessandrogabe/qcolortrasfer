@@ -32,14 +32,10 @@ test('phase refinement is owned by worker wrapper and known CHROMA can bypass ZX
   assert.match(js,/if\(hinted\)/);assert.match(js,/decodeChromaRasterFast/);assert.match(js,/const base=await runBase/);
 });
 
-test('camera runtime tries 60 ideal before app fallback and gates saturated frame callbacks',async()=>{
+test('camera runtime expands 60 and 30 exact to ideal before app fallback and gates saturated frames',async()=>{
   const js=await readFile(root('js/rx-v3-runtime.js'),'utf8');
-  assert.match(js,/cloneVideoWithFrameRate\(constraints, \{ ideal: 60 \}\)/);
-  assert.match(js,/__QCOLOR_CAMERA_NEGOTIATION = '60 ideal'/);
-  assert.match(js,/busy >= pool/);assert.match(js,/__QCOLOR_RX_EARLY_DROPS/);
-  const exactAt=js.indexOf("__QCOLOR_CAMERA_NEGOTIATION = '60 exact'");
-  const idealAt=js.indexOf("__QCOLOR_CAMERA_NEGOTIATION = '60 ideal'");
-  assert.ok(exactAt>=0&&idealAt>exactAt);
+  assert.match(js,/exact !== 60 && exact !== 30/);assert.match(js,/cloneVideoWithFrameRate\(constraints, \{ ideal: exact \}\)/);
+  assert.match(js,/`\$\{exact\} ideal`/);assert.match(js,/busy >= pool/);assert.match(js,/__QCOLOR_RX_EARLY_DROPS/);
 });
 
 test('green RX overlay maps camera geometry through object-fit contain and is throttled',()=>{
