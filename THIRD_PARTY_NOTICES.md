@@ -11,21 +11,24 @@ qcolortrasfer adotta deliberatamente dalla release MIT v0.3.0 i principi di QR s
 
 ## Decimen Optical Transfer >= v0.4.0
 
-Le release Decimen >= v0.4.0 sono AGPL-3.0-or-later. qcolortrasfer può citarne benchmark pubblici e studiarne il comportamento/architettura a livello concettuale, ma **nessun sorgente AGPL viene copiato, adattato o incorporato** nel progetto MIT.
+Le release Decimen >= v0.4.0 e il progetto `decimen-codec` sono AGPL-3.0-or-later. qcolortrasfer può citarne benchmark pubblici e studiarne comportamento e architettura a livello concettuale, ma **nessun sorgente AGPL viene copiato, tradotto, adattato o incorporato** nel progetto MIT.
 
 La v2 di qcolortrasfer reimplementa indipendentemente principi generali di ricezione/trasmissione ottica ad alto throughput — QR densi, mask fissata, lookahead, repaint sfalsati, full-frame acquisition, ROI/crop e worker pool — usando codice originale qcolortrasfer.
 
-La pipeline tracked-decoding introdotta in qcolortrasfer v2.5 è inoltre un'implementazione indipendente ispirata dall'analisi dell'architettura e del comportamento pubblicamente osservabili di Decimen >=0.4: persistenza della geometria del QR, crop predittivi, campionamento prospettico della griglia nota, percorso detector-free e cadence differenziata dei full scan. **Nessun codice `decimen-codec`, `readTracked` o altro sorgente AGPL di Decimen >=0.4 è copiato, tradotto, adattato o incorporato.** Il sampler tracked di qcolortrasfer è codice originale MIT e usa le API pubbliche di ZXing-WASM/ZXing-C++.
+La pipeline tracked-decoding introdotta nella v2.5 e raffinata nella v2.8 è un'implementazione indipendente ispirata dall'analisi dell'architettura e del comportamento pubblicamente osservabili di Decimen >=0.4. La v2.8 accredita in particolare come ispirazione concettuale: persistenza e riuso della geometria, riallineamento economico sui finder prima del campionamento completo, soglie luminanza locali, uso degli alignment pattern per tollerare distorsione ottica, aggiornamento della geometria a ogni tracked hit, fallback sul decoder ordinario dello stesso crop, priorità dei full scan di recupero, drop dei frame quando il pool è saturo e richiesta capability-gated dell'autofocus continuo.
+
+**Nessun codice `decimen-codec`, `readTracked` o altro sorgente AGPL di Decimen >=0.4 è copiato, tradotto, adattato o incorporato.** Gli algoritmi JS di riallineamento, soglia locale, compensazione geometrica, scheduler e telemetria di qcolortrasfer sono codice originale MIT e usano le API pubbliche di ZXing-WASM/ZXing-C++.
 
 Sono inoltre implementazioni originali qcolortrasfer/MIT:
 
 - QCT2, il frame ottico compatto da 24 byte + CRC32;
 - QCF2, il container fountain-protected per nome file, SHA-256 e contenuto;
 - QAR1 / AUX Repair, il side-channel sistematico a stripe introdotto nella v2.6;
+- QAR2, il mini-fountain GF(2) a equazioni da 256 byte introdotto nella v2.8 per rendere il repair channel tollerante alla perdita;
 - il pool di Web Worker per la generazione dei raster TX;
-- la policy AUTO 4/6 basata su dimensione fisica del raster/display;
+- la policy AUTO 4/6 e la policy AUX AUTO basate sulla densità fisica display/raster;
 - il tracker RX ROI e la relativa logica acquisition/degraded/locked;
-- il sampler prospettico tracked e il detector bypass v2.5;
+- il sampler prospettico tracked e il detector bypass;
 - la modulazione dual-QR a 4 stati;
 - la ricostruzione del QR cromatico C1 dalla geometria del QR base;
 - il profilo sperimentale 8 stati / 3 canali.
