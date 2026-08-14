@@ -1,13 +1,13 @@
 // Previous cache markers kept for regression tests:
 // qcolortrasfer-v2.2.1-ios-optical-overlay
 // qcolortrasfer-v2.2.2-start-optical
-const CACHE = 'qcolortrasfer-v2.5.0-tracked-rx';
+const CACHE = 'qcolortrasfer-v2.6.0-decimen-aux-repair';
 
 const CORE = [
   './', './index.html', './styles.css', './tx-flow.css', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
-  './js/ui-shell.js', './js/tx-optical-view.js', './js/tx-flow-ui.js', './js/rx-performance-policy.js', './js/tx-profile-policy.js',
-  './js/app.js', './js/crc32.js', './js/fountain.js', './js/protocol.js', './js/optical.js',
+  './js/ui-shell.js', './js/tx-optical-view.js', './js/tx-flow-ui.js', './js/rx-performance-policy.js', './js/tx-profile-policy.js', './js/tx-aux-repair.js',
+  './js/app.js', './js/crc32.js', './js/fountain.js', './js/protocol.js', './js/aux-repair.js', './js/optical.js',
   './js/color-code.js', './js/adaptive-scheduler.js', './js/high-throughput.js', './js/tx-worker.js',
   './js/rx-roi.js', './js/tracked-qr.js', './js/qr-worker.js'
 ];
