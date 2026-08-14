@@ -9,6 +9,8 @@ import './rx-performance-policy.js';
 import './rx-detection-overlay.js';
 import './tx-profile-policy.js';
 import './tx-aux-repair-v2.js';
+import './rx-chroma-worker-bridge.js';
+import './tx-chroma-fountain.js';
 
 const homeView = document.getElementById('homeView');
 const workspaceView = document.getElementById('workspaceView');
