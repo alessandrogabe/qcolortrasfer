@@ -7,6 +7,9 @@
 //   sample that known grid directly and decode a clean synthetic QR in isPure
 //   mode. The expensive finder/detector stage is skipped entirely.
 //
+// V2.6 also recognizes the small QAR1 AUX repair QR. AUX bytes are returned in
+// a separate field so app.js keeps processing only QCT1/QCT2 symbols.
+//
 // The tracked sampler is original qcolortrasfer/MIT code. It implements the
 // general geometry principle independently; no Decimen >=0.4 source is used.
 
@@ -14,6 +17,7 @@ import {
   chromaScoreA, chromaScoreB, clusterColorScores, classifyColorScore
 } from './color-code.js';
 import { FLAG_COLOR_8, FLAG_V2_COLOR_8, MAGIC, MAGIC_V2 } from './protocol.js';
+import { AUX_MAGIC } from './aux-repair.js';
 import { detectionBoxFromPosition } from './rx-roi.js';
 import { sampleTrackedQr, shiftQuad, modulesFromVersion, versionFromModules } from './tracked-qr.js';
 
@@ -66,6 +70,8 @@ function packetMagic(bytes) {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0);
 }
 function isQct(bytes) { const magic = packetMagic(bytes); return magic === MAGIC || magic === MAGIC_V2; }
+function isAux(bytes) { return packetMagic(bytes) === AUX_MAGIC; }
+function isOptical(bytes) { return isQct(bytes) || isAux(bytes); }
 function usesEightStates(bytes) {
   const magic = packetMagic(bytes);
   if (magic === MAGIC) return Boolean(bytes[5] & FLAG_COLOR_8);
@@ -162,10 +168,10 @@ function syntheticImage(item) {
 }
 async function decodeSyntheticResults(reader,matrices) {
   const out=[];
-  for(const matrix of matrices){const results=await reader.readBarcodes(syntheticImage(matrix),PURE_OPTIONS);const hit=results.find(item=>item.isValid&&item.bytes?.length>0&&isQct(item.bytes));if(hit)out.push(hit);}
+  for(const matrix of matrices){const results=await reader.readBarcodes(syntheticImage(matrix),PURE_OPTIONS);const hit=results.find(item=>item.isValid&&item.bytes?.length>0&&isOptical(item.bytes));if(hit)out.push(hit);}
   return out;
 }
-async function decodeSynthetic(reader,matrices) { return (await decodeSyntheticResults(reader,matrices)).map(item=>item.bytes); }
+async function decodeSynthetic(reader,matrices) { return (await decodeSyntheticResults(reader,matrices)).filter(item=>isQct(item.bytes)).map(item=>item.bytes); }
 
 async function tryTrackedBase(reader,image,trackedQuad,trackedModules,originX,originY) {
   if(!trackedQuad||!(trackedModules>0))return null;
@@ -181,23 +187,26 @@ self.onmessage=async event=>{
   let trackedAttempted=false,trackedHit=false,trackedSeparation=0;
   try{
     const reader=await getReader(); const image=new ImageData(new Uint8ClampedArray(buf),w,h);
-    let results=[],base=[],detections=[],symbols=[];
+    let results=[],base=[],auxBase=[],detections=[],symbols=[],auxSymbols=[];
     let tracked=null;
     if(mode==='crop'&&trackedQuad&&trackedModules>0){
       trackedAttempted=true;
       tracked=await tryTrackedBase(reader,image,trackedQuad,trackedModules,originX,originY);
       if(tracked){
         trackedHit=true; trackedSeparation=tracked.separation;
-        base=[{bytes:tracked.bytes,position:tracked.localQuad,version:versionFromModules(tracked.modules)}];
-        symbols=[tracked.bytes];
+        const syntheticResult={bytes:tracked.bytes,position:tracked.localQuad,version:versionFromModules(tracked.modules)};
+        if(isQct(tracked.bytes)){base=[syntheticResult];symbols=[tracked.bytes];}
+        else if(isAux(tracked.bytes)){auxBase=[syntheticResult];auxSymbols=[tracked.bytes];}
         const detection=detectionFromTracked(tracked.globalQuad,tracked.modules,true);if(detection)detections=[detection];
       }
     }
     if(!trackedHit){
       results=await reader.readBarcodes(image,mode==='crop'?CROP_OPTIONS:FULL_OPTIONS);
-      base=results.filter(item=>item.isValid&&item.bytes?.length>0&&isQct(item.bytes));
-      const baseSet=new Set(base); symbols=base.map(item=>item.bytes);
-      detections=results.map(item=>resultDetection(item,originX,originY,baseSet.has(item))).filter(Boolean);
+      const optical=results.filter(item=>item.isValid&&item.bytes?.length>0&&isOptical(item.bytes));
+      base=optical.filter(item=>isQct(item.bytes));
+      auxBase=optical.filter(item=>isAux(item.bytes));
+      const opticalSet=new Set(optical); symbols=base.map(item=>item.bytes); auxSymbols=auxBase.map(item=>item.bytes);
+      detections=results.map(item=>resultDetection(item,originX,originY,opticalSet.has(item))).filter(Boolean);
     }
 
     const matricesA=[],matricesB=[];let sepA=0,sepB=0,eightBase=0;
@@ -210,8 +219,8 @@ self.onmessage=async event=>{
       }
     } else eightBase=base.reduce((count,item)=>count+(usesEightStates(item.bytes)?1:0),0);
     const colorA=decodeColor?await decodeSynthetic(reader,matricesA):[],colorB=decodeColor?await decodeSynthetic(reader,matricesB):[]; symbols.push(...colorA,...colorB);
-    self.postMessage({id,mode,regionId,detections,symbols,baseCount:base.length,eightBase,color1Candidates:matricesA.length,color1Count:colorA.length,color1Separation:matricesA.length?sepA/matricesA.length:0,color2Candidates:matricesB.length,color2Count:colorB.length,color2Separation:matricesB.length?sepB/matricesB.length:0,trackedAttempted,trackedHit,trackedSeparation,error:null});
-  }catch(error){self.postMessage({id,mode,regionId,detections:[],symbols:[],baseCount:0,eightBase:0,color1Candidates:0,color1Count:0,color1Separation:0,color2Candidates:0,color2Count:0,color2Separation:0,trackedAttempted,trackedHit:false,trackedSeparation,error:error?.message||String(error)});}
+    self.postMessage({id,mode,regionId,detections,symbols,auxSymbols,baseCount:base.length,auxCount:auxBase.length,eightBase,color1Candidates:matricesA.length,color1Count:colorA.length,color1Separation:matricesA.length?sepA/matricesA.length:0,color2Candidates:matricesB.length,color2Count:colorB.length,color2Separation:matricesB.length?sepB/matricesB.length:0,trackedAttempted,trackedHit,trackedSeparation,error:null});
+  }catch(error){self.postMessage({id,mode,regionId,detections:[],symbols:[],auxSymbols:[],baseCount:0,auxCount:0,eightBase:0,color1Candidates:0,color1Count:0,color1Separation:0,color2Candidates:0,color2Count:0,color2Separation:0,trackedAttempted,trackedHit:false,trackedSeparation,error:error?.message||String(error)});}
 };
 
-void Promise.all([getReader(),getQrCode()]).then(()=>self.postMessage({id:-1,ready:true,symbols:[],detections:[],error:null})).catch(error=>self.postMessage({id:-1,ready:false,symbols:[],detections:[],error:error?.message||String(error)}));
+void Promise.all([getReader(),getQrCode()]).then(()=>self.postMessage({id:-1,ready:true,symbols:[],auxSymbols:[],detections:[],error:null})).catch(error=>self.postMessage({id:-1,ready:false,symbols:[],auxSymbols:[],detections:[],error:error?.message||String(error)}));
