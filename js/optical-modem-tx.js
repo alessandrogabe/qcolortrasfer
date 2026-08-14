@@ -16,7 +16,7 @@ function install(){
   let option=[...method.options].find(o=>o.value==='modem');if(!option){option=new Option('OPTICAL MODEM · 4 COLORI GRID EXP','modem');method.add(option);}else option.textContent='OPTICAL MODEM · 4 COLORI GRID EXP';
 
   let session=null,running=false,generation=0,raf=0,workers=[],busy=[],jobs=[],queue=[],workerCursor=0,jobId=0,shown=0,misses=0,startedAt=0,wakeLock=null,current=null;
-  let savedPayload=payload.value,savedFps=fps.value,savedColor=colorMode?.value,savedGrid=grid?.value,active=false;
+  let savedPayload=payload.value,savedFps=fps.value,savedColor=colorMode?.value,savedGrid=grid?.value,active=false,syncingMethod=false;
 
   function enabled(){return method.value==='modem';}
   function setStatus(text,kind=''){if(status){status.textContent=text;status.dataset.kind=kind;}}
@@ -74,7 +74,17 @@ function install(){
   function enter(){if(active)return;active=true;savedPayload=payload.value;savedFps=fps.value;savedColor=colorMode?.value;savedGrid=grid?.value;let opt=[...payload.options].find(o=>o.value===String(MODEM_CHUNK_BYTES));if(!opt){opt=new Option(`${MODEM_CHUNK_BYTES} B · MODEM fisso`,String(MODEM_CHUNK_BYTES));opt.dataset.modem='1';payload.add(opt);}payload.value=String(MODEM_CHUNK_BYTES);payload.disabled=true;if(colorMode)colorMode.disabled=true;if(grid)grid.disabled=true;fps.value=String(DEFAULT_FPS);document.body.dataset.txVariant='optical-modem';session=null;const palette=MODEM_PALETTE.map(c=>`rgb(${c.join(',')})`).join(' · ');setStatus(`OPTICAL MODEM pronto: motore separato 192×108, fiducial propri, calibrazione per frame, 4 colori R/G/B/M, Hamming interlacciato + CRC + fountain. Nessun QR/ZXing. ${palette}.`,'ok');}
   function leave(){if(!active)return;active=false;stop({quiet:true});payload.disabled=false;colorMode&&(colorMode.disabled=false);grid&&(grid.disabled=false);const opt=[...payload.options].find(o=>o.dataset.modem==='1');if(opt)opt.remove();if([...payload.options].some(o=>o.value===savedPayload))payload.value=savedPayload;if([...fps.options].some(o=>o.value===savedFps))fps.value=savedFps;if(colorMode&&[...colorMode.options].some(o=>o.value===savedColor))colorMode.value=savedColor;if(grid&&[...grid.options].some(o=>o.value===savedGrid))grid.value=savedGrid;delete document.body.dataset.txVariant;}
 
-  method.addEventListener('change',()=>{if(enabled())enter();else leave();});
+  // tx-profile-policy owns the txMethod select and only understands classic or
+  // multi. In capture phase, first hand its internal state to multi (so its
+  // Classic click interceptor is disabled), then keep the visible value modem.
+  document.addEventListener('change',event=>{
+    if(event.target!==method||syncingMethod)return;
+    if(method.value==='modem'){
+      event.preventDefault();event.stopImmediatePropagation();syncingMethod=true;
+      method.value='multi';method.dispatchEvent(new Event('change',{bubbles:true}));method.value='modem';syncingMethod=false;enter();
+    }else if(active)leave();
+  },{capture:true});
+  method.addEventListener('change',()=>{if(enabled())enter();else if(active)leave();});
   fileInput.addEventListener('change',event=>{if(!enabled())return;event.preventDefault();event.stopImmediatePropagation();stop({quiet:true});session=null;const file=fileInput.files?.[0];if(fileInfo)fileInfo.textContent=file?`${file.name} · ${formatBytes(file.size)} · pronto per OPTICAL MODEM`:'Nessun file selezionato.';setStatus(file?'File selezionato. START apre il modem ottico.':'Seleziona un file.',file?'ok':'');},{capture:true});
   document.addEventListener('click',event=>{if(!enabled())return;const id=event.target?.id;if(!['startTx','fsStartTx','stopTx','fsStopTx','fsResetTx','fsExitTx'].includes(id))return;event.preventDefault();event.stopImmediatePropagation();if(id==='startTx'){if(!fileInput.files?.length){setStatus('Seleziona prima un file.','warn');return;}enterTxOpticalView();void start();}else if(id==='fsStartTx')void start();else if(id==='fsResetTx')void resetTx();else if(id==='fsExitTx'){stop({quiet:true});exitTxOpticalView();}else stop();},{capture:true});
   window.addEventListener('resize',()=>{if(enabled()&&current)requestAnimationFrame(()=>render(current));});
