@@ -223,33 +223,24 @@ function ringScore(image,cx,cy,r){
   if(dn<8||ln<8)return-1e9;const darkMean=dark/dn,lightMean=light/ln;return lightMean-darkMean;
 }
 
-function searchCorner(image,quadrant){
-  const w=image.width,h=image.height,min=Math.min(w,h),grid=Math.max(6,Math.floor(min/105));
-  const bounds=quadrant===0?[.04,.52,.04,.52]:quadrant===1?[.48,.96,.04,.52]:quadrant===2?[.48,.96,.48,.96]:[.04,.52,.48,.96];
-  let best=null;const radii=[.010,.014,.018,.023,.029,.036,.045].map(v=>Math.max(3,min*v));
-  for(let y=Math.floor(h*bounds[2]);y<h*bounds[3];y+=grid)for(let x=Math.floor(w*bounds[0]);x<w*bounds[1];x+=grid)for(const r of radii){const score=ringScore(image,x,y,r);if(!best||score>best.score)best={x,y,r,score};}
-  if(!best||best.score<45)return null;
-  let refined=best;const baseX=best.x,baseY=best.y,baseR=best.r,delta=Math.max(2,Math.floor(grid*.75));
-  for(let dy=-delta;dy<=delta;dy+=2)for(let dx=-delta;dx<=delta;dx+=2)for(let dr=-3;dr<=3;dr+=1){const r=Math.max(3,baseR+dr),score=ringScore(image,baseX+dx,baseY+dy,r);if(score>refined.score)refined={x:baseX+dx,y:baseY+dy,r,score};}
-  return refined;
-}
-
-export function detectModemMarkers(image){
-  if(!image?.data||!(image.width>0)||!(image.height>0))return null;const found=[];
-  for(let q=0;q<4;q++){const marker=searchCorner(image,q);if(!marker)return null;found.push(marker);}
-  const avg=found.reduce((s,m)=>s+m.score,0)/4;if(avg<55)return null;return{markers:found.map(({x,y,r})=>({x,y,r})),score:avg};
-}
-
-function refineMarker(image,marker){
-  const baseR=Math.max(3,marker.r||Math.min(image.width,image.height)*.022);let best={x:marker.x,y:marker.y,r:baseR,score:-1e9};
-  for(let dy=-5;dy<=5;dy+=1)for(let dx=-5;dx<=5;dx+=1)for(const dr of [-2,0,2]){const r=Math.max(3,baseR+dr),score=ringScore(image,marker.x+dx,marker.y+dy,r);if(score>best.score)best={x:marker.x+dx,y:marker.y+dy,r,score};}
+function outerCornerForQuadrant(w,h,q){return q===0?{x:0,y:0}:q===1?{x:w,y:0}:q===2?{x:w,y:h}:{x:0,y:h};}
+function refineCandidate(image,seed,grid){
+  if(!seed)return null;let best={...seed},delta=Math.max(2,Math.floor(grid*.75));const baseX=seed.x,baseY=seed.y,baseR=seed.r;
+  for(let dy=-delta;dy<=delta;dy+=2)for(let dx=-delta;dx<=delta;dx+=2)for(let dr=-3;dr<=3;dr+=1){const r=Math.max(3,baseR+dr),score=ringScore(image,baseX+dx,baseY+dy,r);if(score>best.score)best={x:baseX+dx,y:baseY+dy,r,score};}
   return best.score>=40?best:null;
 }
-
-export function refineModemMarkers(image,tracked){
-  if(!tracked?.markers?.length||tracked.markers.length!==4)return null;const markers=[];
-  for(const marker of tracked.markers){const next=refineMarker(image,marker);if(!next)return null;markers.push(next);}
-  return{markers,rotation:Number.isInteger(tracked.rotation)?tracked.rotation:0,anchorSet:tracked.anchorSet||null,score:markers.reduce((s,m)=>s+m.score,0)/4};
+function searchCornerCandidates(image,quadrant){
+  const w=image.width,h=image.height,min=Math.min(w,h),grid=Math.max(6,Math.floor(min/105));
+  const bounds=quadrant===0?[.04,.52,.04,.52]:quadrant===1?[.48,.96,.04,.52]:quadrant===2?[.48,.96,.48,.96]:[.04,.52,.48,.96];
+  const corner=outerCornerForQuadrant(w,h,quadrant),center={x:w/2,y:h/2};let raw=null,outer=null,inner=null;
+  const radii=[.010,.014,.018,.023,.029,.036,.045].map(v=>Math.max(3,min*v));
+  for(let y=Math.floor(h*bounds[2]);y<h*bounds[3];y+=grid)for(let x=Math.floor(w*bounds[0]);x<w*bounds[1];x+=grid)for(const r of radii){
+    const score=ringScore(image,x,y,r);if(score<35)continue;const candidate={x,y,r,score};
+    if(!raw||score>raw.rank)raw={...candidate,rank:score};
+    const outerRank=score-.18*Math.hypot(x-corner.x,y-corner.y);if(!outer||outerRank>outer.rank)outer={...candidate,rank:outerRank};
+    const innerRank=score-.18*Math.hypot(x-center.x,y-center.y);if(!inner||innerRank>inner.rank)inner={...candidate,rank:innerRank};
+  }
+  const refine=seed=>refineCandidate(image,seed,grid);return{raw:refine(raw),outer:refine(outer),inner:refine(inner)};
 }
 
 function homographyForRotation(imageMarkers,rotation,sourcePoints){
@@ -271,6 +262,30 @@ function chooseRotation(image,markers,preferredRotation=null,preferredAnchorSet=
   let best=null;
   for(const set of sets)for(const rotation of rotations){const h=homographyForRotation(markers,rotation,set.points);if(!h)continue;const sync=syncScore(image,h);if(!sync)continue;const candidate={rotation,h,anchorSet:set.name,...sync};if(!best||candidate.score>best.score)best=candidate;}
   return best&&best.accuracy>=.72?best:null;
+}
+
+export function detectModemMarkers(image){
+  if(!image?.data||!(image.width>0)||!(image.height>0))return null;const perQuadrant=[];
+  for(let q=0;q<4;q++)perQuadrant.push(searchCornerCandidates(image,q));
+  let best=null;
+  for(const candidateMode of ['outer','inner','raw']){
+    const markers=perQuadrant.map(c=>c[candidateMode]);if(markers.some(m=>!m))continue;const choice=chooseRotation(image,markers);if(!choice)continue;
+    const ringMean=markers.reduce((s,m)=>s+m.score,0)/4,rank=choice.score+Math.min(12,Math.max(0,ringMean-40)*.06);
+    if(!best||rank>best.rank)best={markers:markers.map(m=>({...m})),rotation:choice.rotation,anchorSet:choice.anchorSet,score:choice.score,accuracy:choice.accuracy,candidateMode,rank};
+  }
+  return best;
+}
+
+function refineMarker(image,marker){
+  const baseR=Math.max(3,marker.r||Math.min(image.width,image.height)*.022);let best={x:marker.x,y:marker.y,r:baseR,score:-1e9};
+  for(let dy=-5;dy<=5;dy+=1)for(let dx=-5;dx<=5;dx+=1)for(const dr of [-2,0,2]){const r=Math.max(3,baseR+dr),score=ringScore(image,marker.x+dx,marker.y+dy,r);if(score>best.score)best={x:marker.x+dx,y:marker.y+dy,r,score};}
+  return best.score>=40?best:null;
+}
+
+export function refineModemMarkers(image,tracked){
+  if(!tracked?.markers?.length||tracked.markers.length!==4)return null;const markers=[];
+  for(const marker of tracked.markers){const next=refineMarker(image,marker);if(!next)return null;markers.push(next);}
+  return{markers,rotation:Number.isInteger(tracked.rotation)?tracked.rotation:0,anchorSet:tracked.anchorSet||null,score:markers.reduce((s,m)=>s+m.score,0)/4};
 }
 
 function feature(rgb,out){
@@ -329,7 +344,7 @@ export async function decodeModemFrame(image,{tracked=null,forceDetect=false}={}
   if(tracked&&!forceDetect)markerState=refineModemMarkers(image,tracked);
   if(markerState){const decoded=await decodeModemWithMarkers(image,markerState);if(decoded)return{...decoded,detected:false};}
   const acquisition=detectModemMarkers(image);if(!acquisition)return null;detected=true;
-  markerState={markers:acquisition.markers.map(m=>({...m})),rotation:tracked?.rotation??0,anchorSet:tracked?.anchorSet||null};
+  markerState={markers:acquisition.markers.map(m=>({...m})),rotation:acquisition.rotation,anchorSet:acquisition.anchorSet};
   const decoded=await decodeModemWithMarkers(image,markerState);return decoded?{...decoded,detected}:null;
 }
 
