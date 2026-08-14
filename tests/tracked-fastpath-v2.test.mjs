@@ -5,16 +5,17 @@ import { chooseAuxLayoutV2, repairSymbolsPerAnchor, selectRepairAnchors } from '
 import { overlayEligibleDetection } from '../js/rx-detection-overlay.js';
 
 function idealFinder(x,y){return x===0||x===6||y===0||y===6||(x>=2&&x<=4&&y>=2&&y<=4);}
-function makeMatrix(modules){const bits=new Uint8Array(modules*modules);for(let y=0;y<modules;y++)for(let x=0;x<modules;x++)bits[y*modules+x]=(x+y)%2;for(const [ox,oy] of [[0,0],[modules-7,0],[0,modules-7]])for(let y=0;y<7;y++)for(let x=0;x<7;x++)bits[(oy+y)*modules+ox+x]=idealFinder(x,y)?1:0;return bits;}
+function paintFinder(bits,modules,ox,oy){
+  for(let y=-1;y<=7;y++)for(let x=-1;x<=7;x++){const gx=ox+x,gy=oy+y;if(gx>=0&&gy>=0&&gx<modules&&gy<modules)bits[gy*modules+gx]=0;}
+  for(let y=0;y<7;y++)for(let x=0;x<7;x++)bits[(oy+y)*modules+ox+x]=idealFinder(x,y)?1:0;
+}
+function makeMatrix(modules){const bits=new Uint8Array(modules*modules);for(let y=0;y<modules;y++)for(let x=0;x<modules;x++)bits[y*modules+x]=(x+y)%2;paintFinder(bits,modules,0,0);paintFinder(bits,modules,modules-7,0);paintFinder(bits,modules,0,modules-7);return bits;}
 function render(bits,modules,scale=4,originX=20,originY=18){const width=originX*2+modules*scale,height=originY*2+modules*scale,data=new Uint8ClampedArray(width*height*4);data.fill(255);for(let y=0;y<modules;y++)for(let x=0;x<modules;x++){const value=bits[y*modules+x]?18:238;for(let yy=0;yy<scale;yy++)for(let xx=0;xx<scale;xx++){const o=((originY+y*scale+yy)*width+originX+x*scale+xx)*4;data[o]=data[o+1]=data[o+2]=value;data[o+3]=255;}}return{data,width,height,originX,originY};}
 
 test('tracked sampler re-anchors a stale quad before sampling the full grid',()=>{
   const modules=57,bits=makeMatrix(modules),image=render(bits,modules),right=image.originX+modules*4,bottom=image.originY+modules*4;
   const stale={topLeft:{x:image.originX-2,y:image.originY-1},topRight:{x:right-2,y:image.originY-1},bottomLeft:{x:image.originX-2,y:bottom-1},bottomRight:{x:right-2,y:bottom-1}};
   const sampled=sampleTrackedQrCandidates(image,stale,modules);assert.ok(sampled);assert.ok(sampled.anchorScore>=120);
-  // With a perfectly rasterized finder, several nearby sub-pixel offsets can
-  // legitimately tie. The production contract is therefore decode quality,
-  // not a prescribed direction of motion for the synthetic quad.
   assert.ok(Math.abs(sampled.offset.x)<=3.5);assert.ok(Math.abs(sampled.offset.y)<=3.5);
   const uniform=sampled.candidates.find(c=>c.kind==='uniform');let same=0;for(let i=0;i<bits.length;i++)if(bits[i]===uniform.bits[i])same++;assert.ok(same/bits.length>0.97);
 });
