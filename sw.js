@@ -1,7 +1,7 @@
 // Previous cache markers kept for regression tests:
 // qcolortrasfer-v2.2.1-ios-optical-overlay
 // qcolortrasfer-v2.2.2-start-optical
-const CACHE = 'qcolortrasfer-v2.6.0-decimen-aux-repair';
+const CACHE = 'qcolortrasfer-v2.6.1-aux-fixed-geometry';
 
 const CORE = [
   './', './index.html', './styles.css', './tx-flow.css', './manifest.webmanifest',
