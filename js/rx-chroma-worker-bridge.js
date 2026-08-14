@@ -1,9 +1,8 @@
-// qcolortrasfer CHROMA FOUNTAIN RX bridge v2.9 (MIT).
+// qcolortrasfer CHROMA RX bridge v3.0 (MIT).
 //
-// Loaded after rx-performance-policy.js. It redirects only qr-worker.js to the
-// CHROMA wrapper while preserving the existing worker instrumentation. A
-// successful full-frame CHROMA acquisition is mapped to the following crop, so
-// that region can bypass ZXing on subsequent frames.
+// Redirects QR workers to the unified CHROMA wrapper. Multiple CHROMA MAIN
+// matrices can be acquired in one full scan; each successful crop promotes its
+// region to the direct color decoder path on subsequent frames.
 
 const recentChroma=[];
 const chromaRegions=new Set();
@@ -18,7 +17,7 @@ function reset(){
 function rememberDetection(d){
   if(!d||d.transport!=='chroma'||!(d.w>0)||!(d.h>0))return;
   recentChroma.push({...d,at:performance.now()});
-  while(recentChroma.length>8)recentChroma.shift();
+  while(recentChroma.length>12)recentChroma.shift();
 }
 function prune(){
   const now=performance.now();
@@ -36,15 +35,17 @@ function render(){
   let el=document.getElementById('rxChromaStats');
   if(!el){el=document.createElement('div');el.id='rxChromaStats';el.className='stats telemetry-line';anchor.after(el);}
   const pct=metrics.attempts?Math.round(metrics.hits*100/metrics.attempts):0;
-  el.textContent=`CHROMA CF ${metrics.hits}/${metrics.attempts} (${pct}%) · fast ${metrics.fast} · Hamming corr ${metrics.corrected} · margin ${metrics.margin?metrics.margin.toFixed(3):'—'} · cal ${metrics.cal?metrics.cal.toFixed(2):'—'} · align ${metrics.align?metrics.align.toFixed(1):'—'} · resample ${metrics.resampled} · decode ${metrics.decodeMs?metrics.decodeMs.toFixed(1):'—'} ms`;
+  el.textContent=`CHROMA MAIN ${metrics.hits}/${metrics.attempts} (${pct}%) · fast ${metrics.fast} · Hamming corr ${metrics.corrected} · margin ${metrics.margin?metrics.margin.toFixed(3):'—'} · cal ${metrics.cal?metrics.cal.toFixed(2):'—'} · align ${metrics.align?metrics.align.toFixed(1):'—'} · resample ${metrics.resampled} · decode ${metrics.decodeMs?metrics.decodeMs.toFixed(1):'—'} ms`;
 }
 function observeResponse(data){
   if(!data)return;
   for(const d of Array.isArray(data.detections)?data.detections:[])rememberDetection(d);
-  if(data.regionId!=null&&Number(data.chromaCount)>0)chromaRegions.add(data.regionId);
-  if(data.chromaAttempted)metrics.attempts++;
-  if(Number(data.chromaCount)>0){
-    metrics.hits++;if(data.chromaFast)metrics.fast++;
+  const count=Math.max(0,Number(data.chromaCount)||0);
+  if(data.regionId!=null&&count>0)chromaRegions.add(data.regionId);
+  const attempts=Math.max(0,Number(data.chromaAttempts)||(data.chromaAttempted?1:0));
+  metrics.attempts+=attempts;
+  if(count>0){
+    metrics.hits+=count;metrics.fast+=Math.max(0,Number(data.chromaFastCount)||(data.chromaFast?count:0));
     metrics.corrected+=Number(data.chromaCorrected)||0;
     metrics.margin=ema(metrics.margin,Number(data.chromaMargin)||0);
     metrics.cal=ema(metrics.cal,Number(data.chromaCalibrationSeparation)||0);

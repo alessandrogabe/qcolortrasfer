@@ -4,15 +4,16 @@
 // qcolortrasfer-v2.6.1-aux-fixed-geometry
 // qcolortrasfer-v2.7.0-multi-aux-overlay
 // qcolortrasfer-v2.8.0-refined-tracked-qar2
-const CACHE = 'qcolortrasfer-v2.9.0-chroma-fountain';
+// qcolortrasfer-v2.9.0-chroma-fountain
+const CACHE = 'qcolortrasfer-v3.0.0-dual-main-color-fast-rx';
 
 const CORE = [
   './', './index.html', './styles.css', './tx-flow.css', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
-  './js/ui-shell.js', './js/tx-optical-view.js', './js/tx-flow-ui.js',
+  './js/ui-shell.js', './js/tx-optical-view.js', './js/tx-flow-ui.js', './js/rx-v3-runtime.js',
   './js/rx-performance-policy.js', './js/rx-detection-overlay.js', './js/rx-chroma-worker-bridge.js',
-  './js/tx-profile-policy.js', './js/tx-aux-repair-v2.js', './js/tx-chroma-fountain.js',
-  './js/chroma-fountain.js', './js/chroma-tx-worker.js', './js/chroma/qr-worker.js',
+  './js/tx-profile-policy.js', './js/tx-aux-repair-v2.js', './js/tx-chroma-fountain.js', './js/tx-dual-main-color.js',
+  './js/chroma-fountain.js', './js/chroma-fast-decoder.js', './js/chroma-tx-worker.js', './js/chroma/qr-worker.js',
   './js/app.js', './js/crc32.js', './js/fountain.js', './js/protocol.js', './js/aux-repair.js', './js/optical.js',
   './js/color-code.js', './js/adaptive-scheduler.js', './js/high-throughput.js', './js/tx-worker.js',
   './js/rx-roi.js', './js/tracked-qr.js', './js/tracked-phase.js', './js/qr-worker.js'
