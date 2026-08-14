@@ -11,21 +11,21 @@ const $=id=>document.getElementById(id),MAX_WORKERS=4,LOCK_FULL_MS=1500;
 function install(){
   if(typeof document==='undefined'||typeof window==='undefined')return;
   const video=$('rxVideo'),status=$('rxStatus'),stats=$('rxStats'),progress=$('rxProgress'),download=$('download'),stage=document.querySelector('#rxView .rx-stage'),controls=document.querySelector('#rxView .controls');
-  const startButton=$('startRx'),stopButton=$('stopRx'),resetButton=$('resetRx');if(!video||!status||!stats||!stage||!controls)return;
+  if(!video||!status||!stats||!stage||!controls)return;
 
   const wrap=document.createElement('label');wrap.className='rx-modem-control';wrap.innerHTML='<span>Metodo RX</span><select id="rxMethod"><option value="qr" selected>QR / MAIN COLOR</option><option value="modem">OPTICAL MODEM · COLOR GRID EXP</option></select>';controls.parentNode?.insertBefore(wrap,controls);const method=wrap.querySelector('select');
   const overlay=document.createElement('canvas');overlay.className='modem-rx-overlay';Object.assign(overlay.style,{position:'absolute',inset:'0',width:'100%',height:'100%',pointerEvents:'none',zIndex:'4'});stage.style.position='relative';stage.appendChild(overlay);
 
   let running=false,stream=null,captureCanvas=document.createElement('canvas'),ctx=captureCanvas.getContext('2d',{alpha:false,willReadFrequently:true});
   let workers=[],busy=[],jobs=[],workerCursor=0,jobId=0,raf=0,tracked=null,lastFull=0,misses=0,earlyDrop=0,attempts=0,hits=0,detectHits=0,trackedHits=0;
-  let corrected=0,resampled=0,syncSum=0,calSum=0,marginSum=0,workerEma=0,decodeEma=0,lastOverlayAt=0,cameraLabel='—';
+  let corrected=0,resampled=0,syncSum=0,calSum=0,marginSum=0,workerEma=0,decodeEma=0,lastOverlayAt=0,cameraLabel='—',lastAnchor='—';
   let decoder=null,currentStream=null,startedAt=0,completed=false,downloadUrl=null,lastControl=null;
 
   function enabled(){return method.value==='modem';}
   function setStatus(text,kind=''){status.textContent=text;status.dataset.kind=kind;}
   function desiredWorkers(){const hc=Math.max(2,Math.floor(Number(navigator.hardwareConcurrency)||4));return Math.min(MAX_WORKERS,hc>=6?4:hc>=4?3:2);}
   function stopTracks(target){for(const track of target?.getTracks?.()||[])try{track.stop();}catch{}}
-  function resetCounters(){tracked=null;lastFull=0;misses=0;earlyDrop=0;attempts=0;hits=0;detectHits=0;trackedHits=0;corrected=0;resampled=0;syncSum=0;calSum=0;marginSum=0;workerEma=0;decodeEma=0;decoder=null;currentStream=null;startedAt=performance.now();completed=false;lastControl=null;if(progress)progress.value=0;if(download){download.hidden=true;download.removeAttribute('href');}if(downloadUrl){URL.revokeObjectURL(downloadUrl);downloadUrl=null;}clearOverlay();updateStats();}
+  function resetCounters(){tracked=null;lastFull=0;misses=0;earlyDrop=0;attempts=0;hits=0;detectHits=0;trackedHits=0;corrected=0;resampled=0;syncSum=0;calSum=0;marginSum=0;workerEma=0;decodeEma=0;decoder=null;currentStream=null;startedAt=performance.now();completed=false;lastControl=null;lastAnchor='—';if(progress)progress.value=0;if(download){download.hidden=true;download.removeAttribute('href');}if(downloadUrl){URL.revokeObjectURL(downloadUrl);downloadUrl=null;}clearOverlay();updateStats();}
 
   function clearOverlay(){const r=stage.getBoundingClientRect(),dpr=Math.max(1,Math.min(2,devicePixelRatio||1));overlay.width=Math.max(1,Math.round(r.width*dpr));overlay.height=Math.max(1,Math.round(r.height*dpr));overlay.getContext('2d').clearRect(0,0,overlay.width,overlay.height);}
   function drawOverlay(markers){
@@ -36,7 +36,7 @@ function install(){
   function updateStats(){
     const elapsed=Math.max(.001,(performance.now()-startedAt)/1000),symps=decoder?decoder.framesNew/elapsed:0,kibs=decoder?decoder.framesNew*MODEM_CHUNK_BYTES/elapsed/1024:0,hitPct=attempts?Math.round(hits*100/attempts):0;
     const sync=hits?Math.round(syncSum*100/hits):0,cal=hits?(calSum/hits).toFixed(3):'—',margin=hits?(marginSum/hits).toFixed(4):'—';
-    stats.textContent=`MODEM ${hits}/${attempts} (${hitPct}%) · ${symps.toFixed(1)} simboli/s · ${kibs.toFixed(1)} KiB/s · detect ${detectHits} · tracked ${trackedHits} · FEC corr ${corrected} · sync ${sync}% · cal ${cal} · margin ${margin} · resample ${resampled} · decode ${decodeEma?decodeEma.toFixed(1):'—'} ms · worker ${workerEma?workerEma.toFixed(1):'—'} ms · pool ${workers.length} · early-drop ${earlyDrop} · camera ${cameraLabel}${lastControl?` · seq~${lastControl.sequenceLow}`:''}`;
+    stats.textContent=`MODEM ${hits}/${attempts} (${hitPct}%) · ${symps.toFixed(1)} simboli/s · ${kibs.toFixed(1)} KiB/s · detect ${detectHits} · tracked ${trackedHits} · anchor ${lastAnchor} · FEC corr ${corrected} · sync ${sync}% · cal ${cal} · margin ${margin} · resample ${resampled} · decode ${decodeEma?decodeEma.toFixed(1):'—'} ms · worker ${workerEma?workerEma.toFixed(1):'—'} ms · pool ${workers.length} · early-drop ${earlyDrop} · camera ${cameraLabel}${lastControl?` · seq~${lastControl.sequenceLow}`:''}`;
     if(progress)progress.value=decoder?decoder.progress*100:0;
   }
 
@@ -65,8 +65,8 @@ function install(){
 
   function onWorker(index,d){
     busy[index]=false;jobs[index]=null;if(d.id<0)return;attempts++;workerEma=workerEma?workerEma*.88+Number(d.workerMs||0)*.12:Number(d.workerMs||0);
-    if(d.ok){hits++;if(d.detected)detectHits++;else trackedHits++;misses=0;tracked={markers:d.markers,rotation:d.rotation};lastFull=d.detected?performance.now():lastFull;corrected+=Number(d.corrected)||0;resampled+=Number(d.resampled)||0;syncSum+=Number(d.syncAccuracy)||0;calSum+=Number(d.calibrationSeparation)||0;marginSum+=Number(d.margin)||0;decodeEma=decodeEma?decodeEma*.88+Number(d.decodeMs||0)*.12:Number(d.decodeMs||0);lastControl=d.control||lastControl;drawOverlay(d.markers);acceptPacket(d.packet);
-      if(!completed)setStatus(`OPTICAL MODEM agganciato · ${MODEM_GRID_W}×${MODEM_GRID_H} · 4 colori · ROI propria · ${decoder?Math.round(decoder.progress*100):0}%`,'ok');
+    if(d.ok){hits++;if(d.detected)detectHits++;else trackedHits++;misses=0;lastAnchor=d.anchorSet||'outer';tracked={markers:d.markers,rotation:d.rotation,anchorSet:lastAnchor};lastFull=d.detected?performance.now():lastFull;corrected+=Number(d.corrected)||0;resampled+=Number(d.resampled)||0;syncSum+=Number(d.syncAccuracy)||0;calSum+=Number(d.calibrationSeparation)||0;marginSum+=Number(d.margin)||0;decodeEma=decodeEma?decodeEma*.88+Number(d.decodeMs||0)*.12:Number(d.decodeMs||0);lastControl=d.control||lastControl;drawOverlay(d.markers);acceptPacket(d.packet);
+      if(!completed)setStatus(`OPTICAL MODEM agganciato · ${MODEM_GRID_W}×${MODEM_GRID_H} · 4 colori · SYNC ${lastAnchor} · ${decoder?Math.round(decoder.progress*100):0}%`,'ok');
     }else{misses++;if(misses>=8)tracked=null;if(d.error&&misses%20===0)setStatus(`OPTICAL MODEM: ${d.error}`,'warn');}
     updateStats();
   }
