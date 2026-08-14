@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  RoiTracker, boxIou, detectionBoxFromPosition, paddedCrop, sameRegion, workerCountForHardware,
+  RoiTracker, boxIou, detectionBoxFromPosition, paddedCrop, plausibleSmallQrSighting, sameRegion, workerCountForHardware,
   ROI_ACQUIRE_SCAN_MS, ROI_DEGRADED_SCAN_MS, ROI_LOCKED_SCAN_MS
 } from '../js/rx-roi.js';
 
@@ -79,8 +79,26 @@ test('unconfirmed sighting cannot create a phantom before first real decode', ()
   tracker.observe([{ x: 50, y: 50, w: 100, h: 100, decoded: false }], 0);
   assert.equal(tracker.regions.length, 0);
   tracker.observe([{ x: 50, y: 50, w: 100, h: 100, decoded: true }], 10);
-  tracker.observe([{ x: 250, y: 50, w: 105, h: 95, decoded: false }], 20);
+  tracker.observe([{ x: 250, y: 50, w: 105, h: 95, decoded: false, quad:{topLeft:{x:250,y:50},topRight:{x:355,y:50},bottomLeft:{x:250,y:145},bottomRight:{x:355,y:145}} }], 20);
   assert.equal(tracker.regions.length, 2);
+});
+
+test('small square helper sighting is retained after MAIN lock while tiny/no-quad noise is rejected', () => {
+  const reference = { x: 0, y: 0, w: 300, h: 300 };
+  const helper = {
+    x: 40, y: 340, w: 82, h: 80,
+    quad:{topLeft:{x:40,y:340},topRight:{x:122,y:340},bottomLeft:{x:40,y:420},bottomRight:{x:122,y:420}}
+  };
+  assert.equal(plausibleSmallQrSighting(helper, reference), true);
+  assert.equal(plausibleSmallQrSighting({ ...helper, w: 30, h: 30 }, reference), false);
+  assert.equal(plausibleSmallQrSighting({ ...helper, quad: null }, reference), false);
+
+  const tracker = new RoiTracker();
+  tracker.observe([{ ...reference, decoded:true }], 0);
+  tracker.observe([{ ...helper, decoded:false }], 10);
+  assert.equal(tracker.regions.length, 2);
+  assert.equal(tracker.regions[1].confirmed, false);
+  assert.equal(tracker.chooseForCrops(4, 30).some(r => r.id === tracker.regions[1].id), true);
 });
 
 test('full scans slow down after lock and accelerate when degraded', () => {
