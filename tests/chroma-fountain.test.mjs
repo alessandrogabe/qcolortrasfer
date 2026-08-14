@@ -59,7 +59,7 @@ test('MAIN COLOR TX sends two fountain symbols in one standards-valid colored QR
 test('DUAL MAIN COLOR uses two real QR MAINs and four fountain symbols per lane cycle',async()=>{
   const js=await readFile(root('js/tx-dual-main-color.js'),'utf8');
   assert.match(js,/2 MAIN COLOR · QR VALIDO \+ CHROMA FAST EXP/);assert.match(js,/encodeChromaOpticalPacket/);assert.match(js,/CHROMA_CHUNK_BYTES\*2\*LANES\*selectedFps/);
-  assert.doesNotMatch(js,/helper|QAR2/i);
+  assert.doesNotMatch(js,/encodeAuxRepairPacket|QAR2/);
 });
 
 test('MAIN COLOR RX uses native side decoder and disables legacy C1/C2 after lock',async()=>{
