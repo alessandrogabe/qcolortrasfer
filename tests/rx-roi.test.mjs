@@ -13,7 +13,7 @@ test('ZXing position becomes a full-frame ROI with crop origin applied', () => {
   assert.deepEqual(box, { x: 305, y: 208, w: 103, h: 104 });
 });
 
-test('dynamic RX worker count uses logical cores up to six', () => {
+test('dynamic RX worker primitive still supports two through six', () => {
   assert.equal(workerCountForHardware(2), 2);
   assert.equal(workerCountForHardware(4), 4);
   assert.equal(workerCountForHardware(6), 6);
@@ -30,8 +30,27 @@ test('overlapping detections match while distant codes stay separate', () => {
   assert.equal(sameRegion(a, c), false);
 });
 
-test('wider v2 crop padding clamps to frame boundaries', () => {
-  assert.deepEqual(paddedCrop({ x: 2, y: 3, w: 100, h: 80 }, 200, 150), { x: 0, y: 0, w: 132, h: 113 });
+test('v2.5 crop padding uses 35 percent base margin and clamps to frame', () => {
+  assert.deepEqual(paddedCrop({ x: 2, y: 3, w: 100, h: 80 }, 200, 150), { x: 0, y: 0, w: 137, h: 118 });
+});
+
+test('motion drift expands the next crop safety envelope', () => {
+  const steady = paddedCrop({ x: 100, y: 100, w: 100, h: 100, drift: 0 }, 500, 500);
+  const moving = paddedCrop({ x: 100, y: 100, w: 100, h: 100, drift: 20 }, 500, 500);
+  assert.ok(moving.w > steady.w);
+  assert.ok(moving.h > steady.h);
+});
+
+test('tracker stores decoded quad/modules and estimates drift', () => {
+  const tracker = new RoiTracker();
+  const quad1 = { topLeft:{x:100,y:100},topRight:{x:200,y:100},bottomLeft:{x:100,y:200},bottomRight:{x:200,y:200} };
+  const quad2 = { topLeft:{x:110,y:100},topRight:{x:210,y:100},bottomLeft:{x:110,y:200},bottomRight:{x:210,y:200} };
+  tracker.observe([{ x:100,y:100,w:100,h:100,decoded:true,quad:quad1,modules:177,version:40 }], 0);
+  tracker.observe([{ x:110,y:100,w:100,h:100,decoded:true,quad:quad2,modules:177,version:40 }], 50);
+  assert.equal(tracker.regions[0].modules, 177);
+  assert.equal(tracker.regions[0].version, 40);
+  assert.deepEqual(tracker.regions[0].quad, quad2);
+  assert.ok(tracker.regions[0].drift > 0);
 });
 
 test('tracker merges repeated decoded sightings and allocates independent crops', () => {
@@ -45,6 +64,14 @@ test('tracker merges repeated decoded sightings and allocates independent crops'
   assert.equal(tracker.chooseForCrops(2, 60).some(r => r.id === picked[0].id), false);
   tracker.markDone(picked[0].id);
   assert.equal(tracker.chooseForCrops(2, 70).some(r => r.id === picked[0].id), true);
+});
+
+test('a submitted full scan owns that capture and suppresses crops', () => {
+  const tracker = new RoiTracker();
+  tracker.observe([{ x: 20, y: 20, w: 100, h: 100, decoded: true }], 0);
+  tracker.noteFullScan(100);
+  assert.deepEqual(tracker.chooseForCrops(4, 100), []);
+  assert.equal(tracker.chooseForCrops(4, 120).length, 1);
 });
 
 test('unconfirmed sighting cannot create a phantom before first real decode', () => {
