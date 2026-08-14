@@ -39,10 +39,10 @@ export const MODEM_CODE_CELLS = Math.ceil(MODEM_CODE_BITS / 2);
 // High-saturation palette, deliberately no yellow. Black/white are reserved for
 // sync/fiducials and are never data symbols.
 export const MODEM_PALETTE = Object.freeze([
-  Object.freeze([226, 34, 46]),   // 00 red
-  Object.freeze([34, 202, 74]),   // 01 green
-  Object.freeze([36, 76, 226]),   // 10 blue
-  Object.freeze([220, 46, 206]),  // 11 magenta
+  Object.freeze([226, 34, 46]),
+  Object.freeze([34, 202, 74]),
+  Object.freeze([36, 76, 226]),
+  Object.freeze([220, 46, 206]),
 ]);
 
 const BLACK = Object.freeze([0, 0, 0]);
@@ -221,21 +221,20 @@ function searchCorner(image,quadrant){
   let best=null;const radii=[.010,.014,.018,.023,.029,.036,.045].map(v=>Math.max(3,min*v));
   for(let y=Math.floor(h*bounds[2]);y<h*bounds[3];y+=grid)for(let x=Math.floor(w*bounds[0]);x<w*bounds[1];x+=grid)for(const r of radii){const score=ringScore(image,x,y,r);if(!best||score>best.score)best={x,y,r,score};}
   if(!best||best.score<45)return null;
-  let refined=best;
-  const delta=Math.max(2,Math.floor(grid*.75));
-  for(let dy=-delta;dy<=delta;dy+=2)for(let dx=-delta;dx<=delta;dx+=2)for(let dr=-3;dr<=3;dr+=1){const r=Math.max(3,best.r+dr),score=ringScore(image,best.x+dx,best.y+dy,r);if(score>refined.score)refined={x:best.x+dx,y:best.y+dy,r,score};}
+  let refined=best;const baseX=best.x,baseY=best.y,baseR=best.r,delta=Math.max(2,Math.floor(grid*.75));
+  for(let dy=-delta;dy<=delta;dy+=2)for(let dx=-delta;dx<=delta;dx+=2)for(let dr=-3;dr<=3;dr+=1){const r=Math.max(3,baseR+dr),score=ringScore(image,baseX+dx,baseY+dy,r);if(score>refined.score)refined={x:baseX+dx,y:baseY+dy,r,score};}
   return refined;
 }
 
 export function detectModemMarkers(image){
   if(!image?.data||!(image.width>0)||!(image.height>0))return null;const found=[];
   for(let q=0;q<4;q++){const marker=searchCorner(image,q);if(!marker)return null;found.push(marker);}
-  const avg=found.reduce((s,m)=>s+m.score,0)/4;if(avg<55)return null;return{markers:found.map(({x,y})=>({x,y})),score:avg};
+  const avg=found.reduce((s,m)=>s+m.score,0)/4;if(avg<55)return null;return{markers:found.map(({x,y,r})=>({x,y,r})),score:avg};
 }
 
 function refineMarker(image,marker){
-  let best={x:marker.x,y:marker.y,r:Math.max(3,marker.r||Math.min(image.width,image.height)*.022),score:-1e9};
-  for(let dy=-5;dy<=5;dy+=1)for(let dx=-5;dx<=5;dx+=1)for(const dr of [-2,0,2]){const r=Math.max(3,best.r+dr),score=ringScore(image,marker.x+dx,marker.y+dy,r);if(score>best.score)best={x:marker.x+dx,y:marker.y+dy,r,score};}
+  const baseR=Math.max(3,marker.r||Math.min(image.width,image.height)*.022);let best={x:marker.x,y:marker.y,r:baseR,score:-1e9};
+  for(let dy=-5;dy<=5;dy+=1)for(let dx=-5;dx<=5;dx+=1)for(const dr of [-2,0,2]){const r=Math.max(3,baseR+dr),score=ringScore(image,marker.x+dx,marker.y+dy,r);if(score>best.score)best={x:marker.x+dx,y:marker.y+dy,r,score};}
   return best.score>=40?best:null;
 }
 
@@ -290,7 +289,10 @@ function calibrate(image,h){
 function decodeControl(image,h){
   const bytes=new Uint8Array(8);let votes=0;
   for(let i=0;i<64;i++){
-    let ones=0,zeros=0;for(let copy=0;copy<2;copy++){const p=mapHomography(h,32+i+.5,100+copy+.5);if(!p)continue;const l=lumaAt(image,p.x,p.y);if(l==null)continue;(l<128?ones:zeros)++;}
+    let ones=0,zeros=0;
+    for(let copy=0;copy<2;copy++){
+      const p=mapHomography(h,32+i+.5,100+copy+.5);if(!p)continue;const l=lumaAt(image,p.x,p.y);if(l==null)continue;if(l<128)ones++;else zeros++;
+    }
     if(ones||zeros){setBit(bytes,i,ones>zeros?1:0);votes++;}
   }
   return votes>=56&&bytes[0]===0x4f&&bytes[1]===0x4d?{version:bytes[2],states:bytes[3],streamLow:new DataView(bytes.buffer).getUint16(4),sequenceLow:new DataView(bytes.buffer).getUint16(6)}:null;
@@ -317,7 +319,7 @@ export async function decodeModemFrame(image,{tracked=null,forceDetect=false}={}
   if(tracked&&!forceDetect)markerState=refineModemMarkers(image,tracked);
   if(markerState){const decoded=await decodeModemWithMarkers(image,markerState);if(decoded)return{...decoded,detected:false};}
   const acquisition=detectModemMarkers(image);if(!acquisition)return null;detected=true;
-  markerState={markers:acquisition.markers.map(m=>({...m,r:Math.min(image.width,image.height)*.022})),rotation:tracked?.rotation??0};
+  markerState={markers:acquisition.markers.map(m=>({...m})),rotation:tracked?.rotation??0};
   const decoded=await decodeModemWithMarkers(image,markerState);return decoded?{...decoded,detected}:null;
 }
 
