@@ -126,7 +126,7 @@ function instrumentQrWorker(worker) {
           if (geometry) outgoing = { ...message, trackedQuad: geometry.quad, trackedModules: geometry.modules };
         }
         renderTrackedTelemetry();
-        return nativePost(outgoing, transfer);
+        return transfer === undefined ? nativePost(outgoing) : nativePost(outgoing, transfer);
       };
       if (prop === 'terminate') return () => nativeTerminate();
       const value = Reflect.get(target, prop, target);
@@ -139,14 +139,20 @@ function instrumentQrWorker(worker) {
 function installWorkerTrackingBridge() {
   if (typeof globalThis.Worker !== 'function' || globalThis.__QCOLOR_TRACKED_WORKER_BRIDGE) return;
   const NativeWorker = globalThis.Worker;
-  globalThis.Worker = new Proxy(NativeWorker, {
-    construct(Target, args) {
-      const worker = Reflect.construct(Target, args);
-      const url = String(args?.[0] ?? '');
-      return /(?:^|\/)qr-worker\.js(?:$|[?#])/.test(url) ? instrumentQrWorker(worker) : worker;
-    },
-  });
-  globalThis.__QCOLOR_TRACKED_WORKER_BRIDGE = true;
+  try {
+    const WrappedWorker = new Proxy(NativeWorker, {
+      construct(Target, args) {
+        const worker = Reflect.construct(Target, args);
+        const url = String(args?.[0] ?? '');
+        return /(?:^|\/)qr-worker\.js(?:$|[?#])/.test(url) ? instrumentQrWorker(worker) : worker;
+      },
+    });
+    globalThis.Worker = WrappedWorker;
+    globalThis.__QCOLOR_TRACKED_WORKER_BRIDGE = true;
+  } catch {
+    // A hardened browser may expose Worker as non-replaceable. In that case
+    // app.js keeps the normal crop decoder; no receive functionality is lost.
+  }
 }
 
 function armRxPerformancePolicy() {
