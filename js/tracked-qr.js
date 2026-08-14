@@ -2,19 +2,20 @@
 //
 // Independent high-throughput tracked decoder support. A normal QR decode first
 // establishes the symbol quad + module count. Subsequent crops reuse that
-// geometry, refine it cheaply against the three finder patterns, build local
-// luminance thresholds and sample the known module grid without a global finder
-// search. Optional alignment-pattern residuals compensate moderate lens bow.
+// geometry, cheaply re-lock the three finder patterns independently, rebuild
+// the homography, derive local luminance thresholds and sample the known module
+// grid without a global finder search. Alignment-pattern residuals then provide
+// a bounded correction for moderate lens bow / non-projective distortion.
 //
 // This is original qcolortrasfer code. The architecture is informed by public
-// performance characteristics of Decimen >=0.4, but no AGPL source is copied or
-// adapted.
+// performance characteristics of Decimen >=0.4, but no AGPL source is copied,
+// translated or adapted.
 
 export const TRACKED_MIN_LUMA_SEPARATION = 24;
 export const TRACKED_THRESHOLD_TILES = 8;
 export const TRACKED_TILE_PROBES = 4;
 export const TRACKED_FINDER_SEARCH_PX = 3;
-export const TRACKED_FINDER_MIN_SCORE = 120; // max 147
+export const TRACKED_FINDER_MIN_SCORE = 120; // aggregate core score, max 147
 export const TRACKED_ALIGNMENT_MIN_SCORE = 20; // max 25
 export const TRACKED_MAX_ALIGNMENT_ANCHORS = 8;
 
@@ -63,9 +64,7 @@ function solveLinearSystem(matrix, vector) {
   const a = matrix.map((row, i) => [...row, vector[i]]);
   for (let col = 0; col < n; col++) {
     let pivot = col;
-    for (let row = col + 1; row < n; row++) {
-      if (Math.abs(a[row][col]) > Math.abs(a[pivot][col])) pivot = row;
-    }
+    for (let row = col + 1; row < n; row++) if (Math.abs(a[row][col]) > Math.abs(a[pivot][col])) pivot = row;
     if (Math.abs(a[pivot][col]) < 1e-9) return null;
     [a[col], a[pivot]] = [a[pivot], a[col]];
     const divisor = a[col][col];
@@ -134,8 +133,7 @@ export function clusterLuma(values, minSeparation = TRACKED_MIN_LUMA_SEPARATION)
 
 export function buildLocalThresholdGrid(image, h, modules, offset = {x:0,y:0}) {
   if (!image?.data || !h || !(modules > 0)) return null;
-  const tiles = TRACKED_THRESHOLD_TILES;
-  const probes = TRACKED_TILE_PROBES;
+  const tiles = TRACKED_THRESHOLD_TILES, probes = TRACKED_TILE_PROBES;
   const thresholds = new Float32Array(tiles * tiles);
   const lows = new Float32Array(tiles * tiles); lows.fill(255);
   const highs = new Float32Array(tiles * tiles);
@@ -144,23 +142,17 @@ export function buildLocalThresholdGrid(image, h, modules, offset = {x:0,y:0}) {
   for (let ty=0; ty<tiles; ty++) for (let tx=0; tx<tiles; tx++) {
     const index=ty*tiles+tx;
     for (let sy=0; sy<probes; sy++) for (let sx=0; sx<probes; sx++) {
-      const mx=(tx+(sx+0.5)/probes)*tileSize;
-      const my=(ty+(sy+0.5)/probes)*tileSize;
+      const mx=(tx+(sx+0.5)/probes)*tileSize, my=(ty+(sy+0.5)/probes)*tileSize;
       const p=mapHomography(h,mx,my); if(!p) continue;
       const lum=lumaAt(image,p[0]+offset.x,p[1]+offset.y); if(lum==null) continue;
-      if(lum<lows[index]) lows[index]=lum;
-      if(lum>highs[index]) highs[index]=lum;
-      if(lum<globalLow) globalLow=lum;
-      if(lum>globalHigh) globalHigh=lum;
+      if(lum<lows[index]) lows[index]=lum; if(lum>highs[index]) highs[index]=lum;
+      if(lum<globalLow) globalLow=lum; if(lum>globalHigh) globalHigh=lum;
     }
   }
   const separation=globalHigh-globalLow;
   if (separation < TRACKED_MIN_LUMA_SEPARATION) return null;
   const globalThreshold=(globalLow+globalHigh)/2;
-  for(let i=0;i<thresholds.length;i++) {
-    thresholds[i] = highs[i]-lows[i] >= TRACKED_MIN_LUMA_SEPARATION
-      ? (highs[i]+lows[i])/2 : globalThreshold;
-  }
+  for(let i=0;i<thresholds.length;i++) thresholds[i]=highs[i]-lows[i]>=TRACKED_MIN_LUMA_SEPARATION?(highs[i]+lows[i])/2:globalThreshold;
   return {tiles,thresholds,separation,globalThreshold,modules};
 }
 
@@ -176,145 +168,144 @@ function darkAt(image,h,grid,mx,my,offset={x:0,y:0}) {
   return lum != null && lum <= thresholdAt(grid,mx,my);
 }
 
-function finderIdeal(x,y) {
-  return x===0 || x===6 || y===0 || y===6 || (x>=2&&x<=4&&y>=2&&y<=4);
-}
+function finderIdeal(x,y) { return x===0 || x===6 || y===0 || y===6 || (x>=2&&x<=4&&y>=2&&y<=4); }
 
-export function finderAnchorScore(image,h,grid,modules,offset={x:0,y:0}) {
-  const corners=[[0,0],[modules-7,0],[0,modules-7]];
-  let score=0;
-  for(const [cx,cy] of corners) for(let y=0;y<7;y++) for(let x=0;x<7;x++) {
-    if(darkAt(image,h,grid,cx+x+0.5,cy+y+0.5,offset)===finderIdeal(x,y)) score++;
+function finderPatternScore(image,h,grid,cx,cy,offset) {
+  let core=0, separator=0;
+  for(let y=0;y<7;y++) for(let x=0;x<7;x++) {
+    if(darkAt(image,h,grid,cx+x+0.5,cy+y+0.5,offset)===finderIdeal(x,y)) core++;
   }
-  return score;
+  // The reserved one-module separator surrounding a finder is white. Including
+  // it as a tie-breaker removes the broad score plateaus seen at 3–4 px/module.
+  for(let t=-1;t<=7;t++) {
+    if(!darkAt(image,h,grid,cx+t+0.5,cy-0.5,offset)) separator++;
+    if(!darkAt(image,h,grid,cx+t+0.5,cy+7.5,offset)) separator++;
+  }
+  for(let t=0;t<=6;t++) {
+    if(!darkAt(image,h,grid,cx-0.5,cy+t+0.5,offset)) separator++;
+    if(!darkAt(image,h,grid,cx+7.5,cy+t+0.5,offset)) separator++;
+  }
+  return {core,separator};
 }
 
-export function refineFinderAnchor(image,h,grid,modules,radius=TRACKED_FINDER_SEARCH_PX) {
-  let best={x:0,y:0,score:-1};
+function betterFinder(a,b) {
+  if(!b) return true;
+  if(a.core!==b.core) return a.core>b.core;
+  if(a.separator!==b.separator) return a.separator>b.separator;
+  const amag=Math.abs(a.x)+Math.abs(a.y), bmag=Math.abs(b.x)+Math.abs(b.y);
+  return amag<bmag;
+}
+
+function searchFinderOffset(image,h,grid,cx,cy,radius=TRACKED_FINDER_SEARCH_PX) {
+  let best=null;
   for(let dy=-radius;dy<=radius;dy++) for(let dx=-radius;dx<=radius;dx++) {
-    const score=finderAnchorScore(image,h,grid,modules,{x:dx,y:dy});
-    if(score>best.score) best={x:dx,y:dy,score};
+    const score=finderPatternScore(image,h,grid,cx,cy,{x:dx,y:dy});
+    const candidate={x:dx,y:dy,...score}; if(betterFinder(candidate,best))best=candidate;
   }
   const coarse={...best};
   for(const fy of [-0.5,0,0.5]) for(const fx of [-0.5,0,0.5]) {
-    const candidate={x:coarse.x+fx,y:coarse.y+fy};
-    const score=finderAnchorScore(image,h,grid,modules,candidate);
-    if(score>best.score) best={...candidate,score};
+    const score=finderPatternScore(image,h,grid,cx,cy,{x:coarse.x+fx,y:coarse.y+fy});
+    const candidate={x:coarse.x+fx,y:coarse.y+fy,...score}; if(betterFinder(candidate,best))best=candidate;
   }
   return best;
 }
 
-function alignmentIdeal(x,y) {
-  return x===0 || x===4 || y===0 || y===4 || (x===2&&y===2);
+export function finderAnchorScore(image,h,grid,modules,offset={x:0,y:0}) {
+  const corners=[[0,0],[modules-7,0],[0,modules-7]];
+  return corners.reduce((sum,[cx,cy])=>sum+finderPatternScore(image,h,grid,cx,cy,offset).core,0);
 }
 
+// Kept as a public compatibility helper. Production sampling uses the stronger
+// independent three-finder refinement below.
+export function refineFinderAnchor(image,h,grid,modules,radius=TRACKED_FINDER_SEARCH_PX) {
+  let best={x:0,y:0,score:-1};
+  for(let dy=-radius;dy<=radius;dy++) for(let dx=-radius;dx<=radius;dx++) {
+    const score=finderAnchorScore(image,h,grid,modules,{x:dx,y:dy});
+    if(score>best.score)best={x:dx,y:dy,score};
+  }
+  return best;
+}
+
+function refineFinderCorners(image,h,grid,quad,modules) {
+  const tl=searchFinderOffset(image,h,grid,0,0);
+  const tr=searchFinderOffset(image,h,grid,modules-7,0);
+  const bl=searchFinderOffset(image,h,grid,0,modules-7);
+  const score=tl.core+tr.core+bl.core;
+  if(score<TRACKED_FINDER_MIN_SCORE)return null;
+  const q=shiftQuad(quad,0,0); if(!q)return null;
+  const brOffset={x:tr.x+bl.x-tl.x,y:tr.y+bl.y-tl.y};
+  const move=(p,o)=>({x:p.x+o.x,y:p.y+o.y});
+  const refinedQuad={topLeft:move(q.topLeft,tl),topRight:move(q.topRight,tr),bottomLeft:move(q.bottomLeft,bl),bottomRight:move(q.bottomRight,brOffset)};
+  const meanOffset={x:(tl.x+tr.x+bl.x)/3,y:(tl.y+tr.y+bl.y)/3};
+  return {refinedQuad,score,separatorScore:tl.separator+tr.separator+bl.separator,offset:meanOffset,finderOffsets:{tl,tr,bl,br:brOffset}};
+}
+
+function alignmentIdeal(x,y) { return x===0 || x===4 || y===0 || y===4 || (x===2&&y===2); }
 function alignmentScore(image,h,grid,mx,my,offset) {
   let score=0;
-  for(let y=-2;y<=2;y++) for(let x=-2;x<=2;x++) {
-    if(darkAt(image,h,grid,mx+x+0.5,my+y+0.5,offset)===alignmentIdeal(x+2,y+2)) score++;
-  }
+  for(let y=-2;y<=2;y++) for(let x=-2;x<=2;x++) if(darkAt(image,h,grid,mx+x+0.5,my+y+0.5,offset)===alignmentIdeal(x+2,y+2))score++;
   return score;
 }
 
 function alignmentCandidates(version) {
-  const centers=alignmentPatternCenters(version);
-  if(centers.length<2) return [];
-  const out=[];
-  const last=centers[centers.length-1];
+  const centers=alignmentPatternCenters(version); if(centers.length<2)return[];
+  const out=[],last=centers[centers.length-1];
   for(const y of centers) for(const x of centers) {
-    if((x===6&&y===6)||(x===6&&y===last)||(x===last&&y===6)) continue;
-    out.push({mx:x-2,my:y-2});
+    if((x===6&&y===6)||(x===6&&y===last)||(x===last&&y===6))continue;
+    // Standard tables store the center module. alignmentScore() already walks
+    // ±2 around that center; subtracting two here would shift every candidate.
+    out.push({mx:x,my:y});
   }
-  if(out.length<=TRACKED_MAX_ALIGNMENT_ANCHORS) return out;
-  const selected=[];
-  let remaining=[...out];
-  remaining.sort((a,b)=>(b.mx+b.my)-(a.mx+a.my));
-  selected.push(remaining.shift());
-  while(selected.length<TRACKED_MAX_ALIGNMENT_ANCHORS && remaining.length) {
-    let bestIndex=0,bestDistance=-1;
-    for(let i=0;i<remaining.length;i++) {
-      const c=remaining[i];
-      const minDistance=Math.min(...selected.map(s=>(s.mx-c.mx)**2+(s.my-c.my)**2));
-      if(minDistance>bestDistance){bestDistance=minDistance;bestIndex=i;}
-    }
-    selected.push(remaining.splice(bestIndex,1)[0]);
-  }
+  if(out.length<=TRACKED_MAX_ALIGNMENT_ANCHORS)return out;
+  const selected=[],remaining=[...out].sort((a,b)=>(b.mx+b.my)-(a.mx+a.my)); selected.push(remaining.shift());
+  while(selected.length<TRACKED_MAX_ALIGNMENT_ANCHORS&&remaining.length){let bestIndex=0,bestDistance=-1;for(let i=0;i<remaining.length;i++){const c=remaining[i],minDistance=Math.min(...selected.map(s=>(s.mx-c.mx)**2+(s.my-c.my)**2));if(minDistance>bestDistance){bestDistance=minDistance;bestIndex=i;}}selected.push(remaining.splice(bestIndex,1)[0]);}
   return selected;
 }
 
-export function findAlignmentResiduals(image,h,grid,modules,baseOffset) {
-  const version=versionFromModules(modules);
-  const anchors=[];
+export function findAlignmentResiduals(image,h,grid,modules,baseOffset={x:0,y:0}) {
+  const version=versionFromModules(modules),anchors=[];
   for(const candidate of alignmentCandidates(version)) {
     let best={x:baseOffset.x,y:baseOffset.y,score:-1};
     for(let dy=-2;dy<=2;dy++) for(let dx=-2;dx<=2;dx++) {
-      const offset={x:baseOffset.x+dx,y:baseOffset.y+dy};
-      const score=alignmentScore(image,h,grid,candidate.mx,candidate.my,offset);
-      if(score>best.score) best={...offset,score};
+      const offset={x:baseOffset.x+dx,y:baseOffset.y+dy},score=alignmentScore(image,h,grid,candidate.mx,candidate.my,offset);
+      if(score>best.score)best={...offset,score};
     }
-    if(best.score>=TRACKED_ALIGNMENT_MIN_SCORE) anchors.push({
-      mx:candidate.mx,my:candidate.my,dx:best.x,dy:best.y,score:best.score
-    });
+    if(best.score>=TRACKED_ALIGNMENT_MIN_SCORE)anchors.push({mx:candidate.mx,my:candidate.my,dx:best.x,dy:best.y,score:best.score});
   }
   return anchors;
 }
 
-function correctionAt(mx,my,baseOffset,anchors) {
-  if(!anchors?.length) return baseOffset;
-  let sumW=0.30,sumX=baseOffset.x*0.30,sumY=baseOffset.y*0.30;
-  for(const anchor of anchors) {
-    const d2=(mx-anchor.mx)**2+(my-anchor.my)**2;
-    const w=1/(1+d2/400);
-    sumW+=w; sumX+=anchor.dx*w; sumY+=anchor.dy*w;
-  }
-  return {x:sumX/sumW,y:sumY/sumW};
+function correctionAt(mx,my,anchors) {
+  if(!anchors?.length)return{x:0,y:0};
+  let sumW=0.35,sumX=0,sumY=0;
+  for(const anchor of anchors){const d2=(mx-anchor.mx)**2+(my-anchor.my)**2,w=1/(1+d2/400);sumW+=w;sumX+=anchor.dx*w;sumY+=anchor.dy*w;}
+  return{x:sumX/sumW,y:sumY/sumW};
 }
 
-function sampleMatrix(image,h,grid,modules,baseOffset,anchors=[]) {
-  const bits=new Uint8Array(modules*modules);
-  let index=0;
+function sampleMatrix(image,h,grid,modules,anchors=[]) {
+  const bits=new Uint8Array(modules*modules);let index=0;
   for(let y=0;y<modules;y++) for(let x=0;x<modules;x++) {
-    const mx=x+0.5,my=y+0.5;
-    const correction=correctionAt(mx,my,baseOffset,anchors);
+    const mx=x+0.5,my=y+0.5,correction=correctionAt(mx,my,anchors);
     bits[index++]=darkAt(image,h,grid,mx,my,correction)?1:0;
   }
-  return {bits,modules,separation:grid.separation};
+  return{bits,modules,separation:grid.separation};
 }
 
 export function sampleTrackedQrCandidates(image,quad,modules) {
-  if(!image?.data||!(image.width>0)||!(image.height>0)||!(modules>0)) return null;
-  const h=homographyForQr(modules,quad); if(!h) return null;
-  const coarseGrid=buildLocalThresholdGrid(image,h,modules,{x:0,y:0}); if(!coarseGrid) return null;
-  const anchor=refineFinderAnchor(image,h,coarseGrid,modules);
-  if(anchor.score<TRACKED_FINDER_MIN_SCORE) return null;
-  const baseOffset={x:anchor.x,y:anchor.y};
-  const grid=buildLocalThresholdGrid(image,h,modules,baseOffset) || coarseGrid;
-  const alignmentAnchors=findAlignmentResiduals(image,h,grid,modules,baseOffset);
+  if(!image?.data||!(image.width>0)||!(image.height>0)||!(modules>0))return null;
+  const staleH=homographyForQr(modules,quad);if(!staleH)return null;
+  const coarseGrid=buildLocalThresholdGrid(image,staleH,modules,{x:0,y:0});if(!coarseGrid)return null;
+  const refined=refineFinderCorners(image,staleH,coarseGrid,quad,modules);if(!refined)return null;
+  const h=homographyForQr(modules,refined.refinedQuad);if(!h)return null;
+  const grid=buildLocalThresholdGrid(image,h,modules,{x:0,y:0});if(!grid)return null;
+  const alignmentAnchors=findAlignmentResiduals(image,h,grid,modules,{x:0,y:0});
   const candidates=[];
-  if(alignmentAnchors.length>=2) candidates.push({
-    ...sampleMatrix(image,h,grid,modules,baseOffset,alignmentAnchors),
-    kind:'aligned',alignmentAnchors:alignmentAnchors.length
-  });
-  candidates.push({
-    ...sampleMatrix(image,h,grid,modules,baseOffset,[]),kind:'uniform',alignmentAnchors:0
-  });
-  return {
-    candidates,
-    bits:candidates[0].bits,
-    modules,
-    separation:grid.separation,
-    anchorScore:anchor.score,
-    alignmentAnchors:alignmentAnchors.length,
-    offset:baseOffset,
-    refinedQuad:shiftQuad(quad,baseOffset.x,baseOffset.y),
-  };
+  if(alignmentAnchors.length>=2)candidates.push({...sampleMatrix(image,h,grid,modules,alignmentAnchors),kind:'aligned',alignmentAnchors:alignmentAnchors.length});
+  candidates.push({...sampleMatrix(image,h,grid,modules,[]),kind:'uniform',alignmentAnchors:0});
+  return{candidates,bits:candidates[0].bits,modules,separation:grid.separation,anchorScore:refined.score,separatorScore:refined.separatorScore,alignmentAnchors:alignmentAnchors.length,offset:refined.offset,refinedQuad:refined.refinedQuad,finderOffsets:refined.finderOffsets};
 }
 
 export function sampleTrackedQr(image,quad,modules) {
   const sampled=sampleTrackedQrCandidates(image,quad,modules);
-  return sampled ? {
-    bits:sampled.bits,modules:sampled.modules,separation:sampled.separation,
-    anchorScore:sampled.anchorScore,alignmentAnchors:sampled.alignmentAnchors,
-    refinedQuad:sampled.refinedQuad,offset:sampled.offset
-  } : null;
+  return sampled?{bits:sampled.bits,modules:sampled.modules,separation:sampled.separation,anchorScore:sampled.anchorScore,separatorScore:sampled.separatorScore,alignmentAnchors:sampled.alignmentAnchors,refinedQuad:sampled.refinedQuad,offset:sampled.offset,finderOffsets:sampled.finderOffsets}:null;
 }
