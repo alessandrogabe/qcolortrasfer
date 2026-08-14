@@ -24,7 +24,11 @@ function timingIndices(modules) {
   const start=8, end=modules-8;
   if(end<=start)return [];
   const span=end-start;
-  const stride=Math.max(1,Math.ceil(span/TRACKED_PHASE_MAX_SAMPLES_PER_AXIS));
+  // Timing modules alternate every cell. An even stride would sample only one
+  // parity (all expected dark or all expected light), destroying the phase
+  // signal. Keep the sparse stride odd so both populations are always present.
+  let stride=Math.max(1,Math.floor(span/TRACKED_PHASE_MAX_SAMPLES_PER_AXIS));
+  if((stride&1)===0)stride=Math.max(1,stride-1);
   const out=[];
   for(let i=start;i<end;i+=stride)out.push(i);
   if(out.at(-1)!==end-1)out.push(end-1);
