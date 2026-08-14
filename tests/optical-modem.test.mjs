@@ -5,8 +5,9 @@ import { decodeOpticalPacket } from '../js/protocol.js';
 import {
   MODEM_GRID_W,MODEM_GRID_H,MODEM_STATES,MODEM_PAYLOAD_CELLS,MODEM_PACKET_BYTES,MODEM_CHUNK_BYTES,
   MODEM_CODE_BITS,MODEM_CODE_CELLS,MODEM_PALETTE,MODEM_QUIET,encodeModemPacket,packetToModemStates,modemStatesToPacket,
-  createModemRaster,detectModemMarkers,decodeModemWithMarkers,decodeModemFrame
+  createModemRaster,decodeModemWithMarkers
 } from '../js/optical-modem-codec.js';
+import { detectOuterModemMarkers, refineOuterModemMarkers } from '../js/optical-modem-detector.js';
 
 const root=path=>new URL(`../${path}`,import.meta.url);
 
@@ -55,19 +56,21 @@ test('clean synthetic modem sampling works with exact projective markers',async(
   assert.ok(decoded,'exact marker geometry must decode the clean synthetic frame');assert.equal(decoded.packet.symbolId,19);assert.equal(decoded.anchorSet,'outer');assert.ok(decoded.syncAccuracy>.9);assert.ok(decoded.calibrationSeparation>.1);
 });
 
-test('clean synthetic modem frame is acquired without QR and decoded end-to-end',async()=>{
+test('dedicated four-SYNC detector acquires and decodes a clean modem frame',async()=>{
   const scale=3,{packet}=samplePacket(19),raster=createModemRaster(packet,{streamId:0x12345678,symbolId:19}),image=scaleRaster(raster,scale);
-  const acquisition=detectModemMarkers(image);assert.ok(acquisition);assert.equal(acquisition.markers.length,4);
-  const decoded=await decodeModemFrame(image,{forceDetect:true});assert.ok(decoded,`acquired markers=${JSON.stringify(acquisition.markers)}`);assert.ok(['outer','pilot'].includes(decoded.anchorSet));assert.equal(decoded.packet.symbolId,19);assert.equal(decoded.packet.chunkSize,MODEM_CHUNK_BYTES);assert.ok(decoded.syncAccuracy>.9);assert.ok(decoded.calibrationSeparation>.1);
+  const acquisition=detectOuterModemMarkers(image);assert.ok(acquisition,'dedicated detector must find a coherent outer quartet');assert.equal(acquisition.markers.length,4);assert.ok(acquisition.syncAccuracy>.9);
+  const decoded=await decodeModemWithMarkers(image,acquisition);assert.ok(decoded,`anchors=${JSON.stringify(acquisition.markers)}`);assert.equal(decoded.packet.symbolId,19);assert.equal(decoded.packet.chunkSize,MODEM_CHUNK_BYTES);assert.ok(decoded.syncAccuracy>.9);assert.ok(decoded.calibrationSeparation>.1);
+  const refined=refineOuterModemMarkers(image,acquisition);assert.ok(refined);assert.ok(refined.syncAccuracy>.9);
 });
 
 test('standalone modem engines do not invoke QR or ZXing payload paths',async()=>{
-  const codec=await readFile(root('js/optical-modem-codec.js'),'utf8'),tx=await readFile(root('js/optical-modem-tx.js'),'utf8'),rx=await readFile(root('js/optical-modem-rx.js'),'utf8');
+  const codec=await readFile(root('js/optical-modem-codec.js'),'utf8'),detector=await readFile(root('js/optical-modem-detector.js'),'utf8'),tx=await readFile(root('js/optical-modem-tx.js'),'utf8'),rx=await readFile(root('js/optical-modem-rx.js'),'utf8');
   const dependency=/readBarcodes\s*\(|QRCode\.create\s*\(|(?:from|import).*zxing/i;
-  assert.doesNotMatch(codec,dependency);assert.doesNotMatch(tx,dependency);assert.doesNotMatch(tx,/encodeAuxRepairPacket/);assert.doesNotMatch(rx,dependency);assert.doesNotMatch(rx,/qr-worker/);
-  assert.match(codec,/detectModemMarkers/);assert.match(codec,/Hamming\(15,11\)/);assert.match(rx,/early-drop/i);
+  assert.doesNotMatch(codec,dependency);assert.doesNotMatch(detector,dependency);assert.doesNotMatch(tx,dependency);assert.doesNotMatch(tx,/encodeAuxRepairPacket/);assert.doesNotMatch(rx,dependency);assert.doesNotMatch(rx,/qr-worker/);
+  assert.match(detector,/detectOuterModemMarkers/);assert.match(codec,/Hamming\(15,11\)/);assert.match(rx,/early-drop/i);
 });
 
-test('UI shell loads modem TX/RX before app.js and service worker is expected to cache them',async()=>{
-  const ui=await readFile(root('js/ui-shell.js'),'utf8');assert.match(ui,/optical-modem-tx/);assert.match(ui,/optical-modem-rx/);
+test('UI shell and PWA load all standalone modem runtime modules',async()=>{
+  const ui=await readFile(root('js/ui-shell.js'),'utf8'),sw=await readFile(root('sw.js'),'utf8');assert.match(ui,/optical-modem-tx/);assert.match(ui,/optical-modem-rx/);
+  assert.match(sw,/v3\.2\.0-optical-modem/);for(const name of ['optical-modem-codec','optical-modem-detector','optical-modem-tx-worker','optical-modem-tx','optical-modem-worker','optical-modem-rx'])assert.match(sw,new RegExp(name));
 });
