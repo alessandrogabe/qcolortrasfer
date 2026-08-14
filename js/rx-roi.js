@@ -5,6 +5,10 @@
 // most work on small crops. V2.5 keeps decoded geometry (quad + module count),
 // estimates motion drift, expands crops in the direction-independent safety
 // envelope and gives recovery scans priority over crop work.
+//
+// V2.7 also keeps plausible small QR sightings after at least one real QR has
+// been decoded. This lets low-resolution QAR1 helpers obtain a crop and a second
+// decode attempt even when their first full-frame ZXing pass only found geometry.
 
 export const ROI_MAX_REGIONS = 9;
 export const ROI_TTL_MS = 1500;
@@ -17,10 +21,9 @@ export const ROI_EXPECTED_DECAY_MS = 10000;
 export const ROI_PAD_RATIO = 0.35;
 export const ROI_MIN_PAD_PX = 12;
 export const ROI_FULL_SCAN_PRIORITY_MS = 10;
+export const ROI_SMALL_SIGHTING_MIN_RATIO = 0.16;
+export const ROI_SMALL_SIGHTING_MAX_RATIO = 2.2;
 
-// hardwareConcurrency is a hint. A browser-side policy may temporarily set an
-// explicit target before app.js creates the pool; absent an override we honor
-// the reported count but never exceed six.
 export function workerCountForHardware(hardwareConcurrency) {
   const override = Math.floor(Number(globalThis.__QCOLOR_RX_WORKER_TARGET));
   if (Number.isFinite(override) && override > 0) return Math.max(2, Math.min(6, override));
@@ -63,11 +66,19 @@ export function sameRegion(a, b) {
   return ratio <= 2.4 && centerDistanceRatio(a, b) <= 0.55;
 }
 
+export function plausibleSmallQrSighting(detection, reference) {
+  if (!detection || !reference || !detection.quad) return false;
+  const size = Math.max(Number(detection.w) || 0, Number(detection.h) || 0);
+  const referenceSize = Math.max(Number(reference.w) || 0, Number(reference.h) || 0);
+  if (!(size > 4 && referenceSize > 4)) return false;
+  const ratio = size / referenceSize;
+  const aspect = Math.max(detection.w, detection.h) / Math.max(1, Math.min(detection.w, detection.h));
+  return ratio >= ROI_SMALL_SIGHTING_MIN_RATIO && ratio <= ROI_SMALL_SIGHTING_MAX_RATIO && aspect <= 1.55;
+}
+
 export function paddedCrop(box, frameWidth, frameHeight, padRatio = ROI_PAD_RATIO) {
   const size = Math.max(box.w, box.h);
   const drift = Math.max(0, Number(box?.drift) || 0);
-  // Base margin plus twice the recently observed displacement, capped at one
-  // code size. A handheld crop therefore leads motion instead of chasing it.
   const pad = Math.max(ROI_MIN_PAD_PX, size * padRatio + Math.min(size, 2 * drift));
   const x0 = Math.max(0, Math.floor(box.x - pad));
   const y0 = Math.max(0, Math.floor(box.y - pad));
@@ -113,8 +124,6 @@ export class RoiTracker {
         if (score > bestScore) { bestScore = score; match = region; }
       }
       if (match) {
-        // A failed/sighting-only detection can keep the crop alive but cannot
-        // move a geometry established by a real decoded QR.
         match.lastSeen = now;
         if (decoded) {
           const oldCx = match.x + match.w / 2, oldCy = match.y + match.h / 2;
@@ -138,9 +147,7 @@ export class RoiTracker {
 
       if (!decoded) {
         const reference = this.regions.find(region => region.confirmed);
-        if (!reference) continue;
-        const ratio = Math.max(detection.w, detection.h) / Math.max(reference.w, reference.h);
-        if (ratio < 0.5 || ratio > 2) continue;
+        if (!reference || !plausibleSmallQrSighting(detection, reference)) continue;
       }
       this.regions.push({
         id: this.nextId++, x: detection.x, y: detection.y, w: detection.w, h: detection.h,
@@ -180,9 +187,6 @@ export class RoiTracker {
 
   chooseForCrops(maxCount, now) {
     this.prune(now);
-    // app.js asks for crops immediately after submitting a due full scan. By
-    // returning none in the same capture we give reacquisition true priority,
-    // matching the behavior that performs best on multi-code scenes.
     if (now - this.lastFullScanAt < ROI_FULL_SCAN_PRIORITY_MS) return [];
     return this.regions
       .filter(region => !region.inFlight)
