@@ -1,7 +1,8 @@
 // qcolortrasfer RX performance policy v2.8 (MIT).
 //
 // The worker owns decoding. This bridge wires decoded quad/module geometry back
-// into future crop jobs, measures tracked-path quality, assembles QAR1/QAR2
+// into future crop jobs, performs a cheap timing-pattern phase lock on the crop
+// buffer before transfer, measures tracked-path quality, assembles QAR1/QAR2
 // repair packets and injects completed source blocks into the compatible LT
 // decoder. Camera extras are capability-gated rather than UA-gated.
 //
@@ -10,6 +11,8 @@
 
 import { AuxRepairAssembler } from './aux-repair.js';
 import { findCompatibleFountainDecoder } from './fountain.js';
+import { refineTrackedPhase } from './tracked-phase.js';
+import { shiftQuad } from './tracked-qr.js';
 
 export const RX_ACQUIRE_WIDTH_TARGET = 1280;
 export const RX_ACQUIRE_HEIGHT_TARGET = 960;
@@ -30,14 +33,14 @@ let rxSessionStartedAt=-Infinity;
 let focusRetryTimer=0;
 const metrics={
   crops:0,full:0,trackedAttempts:0,trackedHits:0,fallbackHits:0,responses:0,latencyEma:0,qrWorkers:0,
-  anchorScoreEma:0,alignmentEma:0,alignedHits:0,
+  anchorScoreEma:0,alignmentEma:0,alignedHits:0,phaseAttempts:0,phaseApplied:0,phaseRatioEma:0,phaseMsEma:0,
   auxPackets:0,auxBlocks:0,auxInjected:0,auxPeelGain:0,auxErrors:0,auxRedundant:0,auxRankPeak:0,auxRankTotal:0,
   focus:'—'
 };
 
 function resetTrackedSession(){
   regionGeometry.clear();recentFullDetections=[];taskStarted.clear();auxAssembler.reset();auxPendingBlocks=[];
-  Object.assign(metrics,{crops:0,full:0,trackedAttempts:0,trackedHits:0,fallbackHits:0,responses:0,latencyEma:0,anchorScoreEma:0,alignmentEma:0,alignedHits:0,auxPackets:0,auxBlocks:0,auxInjected:0,auxPeelGain:0,auxErrors:0,auxRedundant:0,auxRankPeak:0,auxRankTotal:0,focus:'—'});
+  Object.assign(metrics,{crops:0,full:0,trackedAttempts:0,trackedHits:0,fallbackHits:0,responses:0,latencyEma:0,anchorScoreEma:0,alignmentEma:0,alignedHits:0,phaseAttempts:0,phaseApplied:0,phaseRatioEma:0,phaseMsEma:0,auxPackets:0,auxBlocks:0,auxInjected:0,auxPeelGain:0,auxErrors:0,auxRedundant:0,auxRankPeak:0,auxRankTotal:0,focus:'—'});
   rxSessionStartedAt=globalThis.performance?.now?.()??Date.now();clearTimeout(focusRetryTimer);renderTrackedTelemetry();
 }
 
@@ -50,6 +53,23 @@ function geometryForCrop(message){
   let best=null,bestDistance=Infinity;
   for(const detection of recentFullDetections){const dx=detection.x+detection.w/2,dy=detection.y+detection.h/2;if(dx<x0||dx>x1||dy<y0||dy>y1)continue;const distance=Math.hypot(dx-cx,dy-cy);if(distance<bestDistance){best=detection;bestDistance=distance;}}
   if(best){const geometry={quad:best.quad,modules:best.modules};regionGeometry.set(message.regionId,geometry);return geometry;}return null;
+}
+
+function phaseLockedGeometry(message,geometry){
+  if(!geometry?.quad||!(geometry.modules>0)||!message?.buf||!(message.w>0)||!(message.h>0))return geometry;
+  let data;
+  try{data=new Uint8ClampedArray(message.buf);}catch{return geometry;}
+  if(data.length<Number(message.w)*Number(message.h)*4)return geometry;
+  const local=shiftQuad(geometry.quad,-(Number(message.originX)||0),-(Number(message.originY)||0));if(!local)return geometry;
+  metrics.phaseAttempts++;const started=performance.now();
+  try{
+    const phase=refineTrackedPhase({data,width:Number(message.w),height:Number(message.h)},local,geometry.modules);
+    metrics.phaseMsEma=ema(metrics.phaseMsEma,performance.now()-started,.12);
+    if(!phase||phase.ratio<0.78)return geometry;
+    const globalQuad=shiftQuad(phase.refinedQuad,Number(message.originX)||0,Number(message.originY)||0);if(!globalQuad)return geometry;
+    metrics.phaseApplied++;metrics.phaseRatioEma=ema(metrics.phaseRatioEma,phase.ratio,.12);
+    return{quad:globalQuad,modules:geometry.modules};
+  }catch{metrics.phaseMsEma=ema(metrics.phaseMsEma,performance.now()-started,.12);return geometry;}
 }
 
 function flushAuxPending(){
@@ -89,7 +109,8 @@ function renderTrackedTelemetry(){
   if(typeof document==='undefined')return;let el=document.getElementById('rxTrackedStats');const anchor=document.getElementById('rxStats');if(!anchor)return;
   if(!el){el=document.createElement('div');el.id='rxTrackedStats';el.className='stats telemetry-line';anchor.after(el);}
   const pct=metrics.trackedAttempts?Math.round(metrics.trackedHits*100/metrics.trackedAttempts):0;
-  el.textContent=`TRACKED ${metrics.trackedHits}/${metrics.trackedAttempts} (${pct}%) · aligned ${metrics.alignedHits} · anchor ${metrics.anchorScoreEma?metrics.anchorScoreEma.toFixed(0):'—'}/147 · align ${metrics.alignmentEma?metrics.alignmentEma.toFixed(1):'—'} · fallback ${metrics.fallbackHits} · full ${metrics.full} · crop ${metrics.crops} · worker ${metrics.latencyEma?metrics.latencyEma.toFixed(1):'—'} ms EMA · pool ${desiredRxWorkerTarget(globalThis.navigator?.hardwareConcurrency)} · focus ${metrics.focus} · AUX eq ${metrics.auxPackets} · rank ${metrics.auxRankTotal} (peak ${metrics.auxRankPeak}) · red ${metrics.auxRedundant} · blocchi ${metrics.auxBlocks} · injected ${metrics.auxInjected} · peeling +${metrics.auxPeelGain} · pending ${auxPendingBlocks.length} · err ${metrics.auxErrors}`;
+  const phasePct=metrics.phaseAttempts?Math.round(metrics.phaseApplied*100/metrics.phaseAttempts):0;
+  el.textContent=`TRACKED ${metrics.trackedHits}/${metrics.trackedAttempts} (${pct}%) · aligned ${metrics.alignedHits} · anchor ${metrics.anchorScoreEma?metrics.anchorScoreEma.toFixed(0):'—'}/147 · align ${metrics.alignmentEma?metrics.alignmentEma.toFixed(1):'—'} · phase ${metrics.phaseApplied}/${metrics.phaseAttempts} (${phasePct}%) ${metrics.phaseRatioEma?Math.round(metrics.phaseRatioEma*100):'—'}% ${metrics.phaseMsEma?metrics.phaseMsEma.toFixed(1):'—'}ms · fallback ${metrics.fallbackHits} · full ${metrics.full} · crop ${metrics.crops} · worker ${metrics.latencyEma?metrics.latencyEma.toFixed(1):'—'} ms EMA · pool ${desiredRxWorkerTarget(globalThis.navigator?.hardwareConcurrency)} · focus ${metrics.focus} · AUX eq ${metrics.auxPackets} · rank ${metrics.auxRankTotal} (peak ${metrics.auxRankPeak}) · red ${metrics.auxRedundant} · blocchi ${metrics.auxBlocks} · injected ${metrics.auxInjected} · peeling +${metrics.auxPeelGain} · pending ${auxPendingBlocks.length} · err ${metrics.auxErrors}`;
 }
 
 function instrumentQrWorker(worker){
@@ -105,7 +126,15 @@ function instrumentQrWorker(worker){
     handleAuxSymbols(data.auxSymbols);queueMicrotask(flushAuxPending);renderTrackedTelemetry();
   });
   return new Proxy(worker,{get(target,prop){
-    if(prop==='postMessage')return(message,transfer)=>{let outgoing=message;if(message&&message.id>=0)taskStarted.set(message.id,performance.now());if(message?.mode==='full')metrics.full++;if(message?.mode==='crop'){metrics.crops++;const geometry=message.regionId!=null?geometryForCrop(message):null;if(geometry)outgoing={...message,trackedQuad:geometry.quad,trackedModules:geometry.modules};}renderTrackedTelemetry();return transfer===undefined?nativePost(outgoing):nativePost(outgoing,transfer);};
+    if(prop==='postMessage')return(message,transfer)=>{
+      let outgoing=message;if(message&&message.id>=0)taskStarted.set(message.id,performance.now());
+      if(message?.mode==='full')metrics.full++;
+      if(message?.mode==='crop'){
+        metrics.crops++;const geometry=message.regionId!=null?geometryForCrop(message):null;
+        if(geometry){const locked=phaseLockedGeometry(message,geometry);outgoing={...message,trackedQuad:locked.quad,trackedModules:locked.modules};}
+      }
+      renderTrackedTelemetry();return transfer===undefined?nativePost(outgoing):nativePost(outgoing,transfer);
+    };
     if(prop==='terminate')return()=>nativeTerminate();const value=Reflect.get(target,prop,target);return typeof value==='function'?value.bind(target):value;
   },set(target,prop,value){return Reflect.set(target,prop,value,target);}});
 }
@@ -122,8 +151,8 @@ function armRxPerformancePolicy(){
 }
 
 function updateRuntimeLabels(){
-  if(typeof document==='undefined')return;const capacity=document.getElementById('capacity');if(capacity)capacity.textContent=capacity.textContent.replace(/RX .*?worker/,'RX 1280@60 · pool 2–4 worker · refined tracked + QAR2');
-  const rxNote=document.querySelector('#rxView .note');if(rxNote)rxNote.innerHTML='<strong>RX FAST v2.8:</strong> 1280×960 con 60 fps exact quando disponibili; 2–4 worker. Il tracked path riallinea il quad sui finder, usa soglie luminanza locali e prova correzioni da alignment pattern prima del fallback ZXing. QAR2 usa equazioni repair da 256 B: pacchetti persi non azzerano più il progresso del blocco. Autofocus continuo viene richiesto solo quando la camera lo espone.';renderTrackedTelemetry();
+  if(typeof document==='undefined')return;const capacity=document.getElementById('capacity');if(capacity)capacity.textContent=capacity.textContent.replace(/RX .*?worker/,'RX 1280@60 · pool 2–4 worker · phase+finder tracked + QAR2');
+  const rxNote=document.querySelector('#rxView .note');if(rxNote)rxNote.innerHTML='<strong>RX FAST v2.8:</strong> 1280×960 con 60 fps exact quando disponibili; 2–4 worker. Prima del worker il timing pattern corregge la fase sub-modulo del quad cached; il tracked path riallinea poi i tre finder, usa soglie luminanza locali e alignment pattern prima del fallback ZXing. QAR2 usa equazioni repair da 256 B: pacchetti persi non azzerano più il progresso del blocco. Autofocus continuo viene richiesto solo quando la camera lo espone.';renderTrackedTelemetry();
 }
 
 installWorkerTrackingBridge();
