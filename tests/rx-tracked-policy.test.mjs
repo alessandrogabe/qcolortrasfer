@@ -23,9 +23,10 @@ test('worker refined tracked path runs before ordinary crop fallback',async()=>{
   assert.match(js,/sampleTrackedQrCandidates/);assert.match(js,/tryTrackedBase/);assert.match(js,/trackedAttempted=true/);assert.match(js,/if\(!trackedHit\)/);assert.match(js,/isPure: true/);assert.match(js,/refinedGlobal/);
 });
 
-test('browser bridge forwards geometry, tracks QAR2 rank and requests capability-gated focus',async()=>{
+test('browser bridge phase-locks crops, forwards refined geometry, tracks QAR2 rank and capability-gated focus',async()=>{
   const js=await readFile(root('js/rx-performance-policy.js'),'utf8');
-  assert.match(js,/trackedQuad:geometry\.quad/);assert.match(js,/trackedModules:geometry\.modules/);assert.match(js,/AuxRepairAssembler/);assert.match(js,/findCompatibleFountainDecoder/);assert.match(js,/injectSourceBlock/);assert.match(js,/auxRankPeak/);assert.match(js,/focusMode:'continuous'/);
+  assert.match(js,/refineTrackedPhase/);assert.match(js,/phaseLockedGeometry/);assert.match(js,/trackedQuad:locked\.quad/);assert.match(js,/trackedModules:locked\.modules/);
+  assert.match(js,/AuxRepairAssembler/);assert.match(js,/findCompatibleFountainDecoder/);assert.match(js,/injectSourceBlock/);assert.match(js,/auxRankPeak/);assert.match(js,/focusMode:'continuous'/);assert.match(js,/phaseMsEma/);
 });
 
 test('green RX overlay maps camera geometry through object-fit contain and is throttled',()=>{
@@ -43,6 +44,6 @@ test('multi QR optical view keeps smooth CSS scaling while Classic remains pixel
   const classic=await readFile(root('js/tx-profile-policy.js'),'utf8');assert.match(classic,/canvas\.style\.imageRendering = 'pixelated'/);
 });
 
-test('PWA v2.8 precaches refined sampler, QAR2 runtime and RX overlay',async()=>{
-  const sw=await readFile(root('sw.js'),'utf8');assert.match(sw,/v2\.8\.0/);assert.match(sw,/\.\/js\/tracked-qr\.js/);assert.match(sw,/\.\/js\/tx-profile-policy\.js/);assert.match(sw,/\.\/js\/tx-aux-repair-v2\.js/);assert.match(sw,/\.\/js\/rx-detection-overlay\.js/);assert.match(sw,/\.\/js\/aux-repair\.js/);
+test('PWA v2.8 precaches phase lock, refined sampler, QAR2 runtime and RX overlay',async()=>{
+  const sw=await readFile(root('sw.js'),'utf8');assert.match(sw,/v2\.8\.0/);assert.match(sw,/\.\/js\/tracked-qr\.js/);assert.match(sw,/\.\/js\/tracked-phase\.js/);assert.match(sw,/\.\/js\/tx-profile-policy\.js/);assert.match(sw,/\.\/js\/tx-aux-repair-v2\.js/);assert.match(sw,/\.\/js\/rx-detection-overlay\.js/);assert.match(sw,/\.\/js\/aux-repair\.js/);
 });
