@@ -8,7 +8,7 @@ import {
 
 const root = path => new URL(`../${path}`, import.meta.url);
 
-test('RX v2.5 returns to Decimen-like 1280 capture and four-worker default', () => {
+test('RX v2.6 keeps Decimen-like 1280 capture and four-worker default', () => {
   assert.equal(RX_ACQUIRE_WIDTH_TARGET, 1280);
   assert.equal(RX_ACQUIRE_HEIGHT_TARGET, 960);
   assert.equal(RX_WORKER_TARGET_MAX, 4);
@@ -18,7 +18,7 @@ test('RX v2.5 returns to Decimen-like 1280 capture and four-worker default', () 
   assert.equal(desiredRxWorkerTarget(8), 4);
 });
 
-test('performance policy no longer inflates app 1280 capture to 1920', () => {
+test('performance policy does not inflate app 1280 capture to 1920', () => {
   const constraints = { video: { width:{ideal:1280}, height:{ideal:960}, frameRate:{exact:60} } };
   assert.equal(upgradeVideoConstraints(constraints), constraints);
 });
@@ -33,25 +33,32 @@ test('worker hot path attempts tracked pure decode before ordinary crop fallback
   assert.match(js, /isPure: true/);
 });
 
-test('browser bridge forwards cached quad and modules and exposes tracked telemetry', async () => {
+test('browser bridge forwards cached geometry and injects completed AUX blocks', async () => {
   const js = await readFile(root('js/rx-performance-policy.js'), 'utf8');
   assert.match(js, /trackedQuad: geometry\.quad/);
   assert.match(js, /trackedModules: geometry\.modules/);
+  assert.match(js, /AuxRepairAssembler/);
+  assert.match(js, /findCompatibleFountainDecoder/);
+  assert.match(js, /injectSourceBlock/);
   assert.match(js, /rxTrackedStats/);
-  assert.match(js, /fallbackHits/);
+  assert.match(js, /AUX pkt/);
 });
 
-test('multi QR optical view restores smooth final CSS scaling while Classic stays separate', async () => {
+test('multi QR optical view keeps smooth final CSS scaling while Classic and AUX remain pixel-exact', async () => {
   const css = await readFile(root('tx-flow.css'), 'utf8');
   assert.match(css, /body\[data-tx-method="multi"\]/);
   assert.match(css, /image-rendering:auto!important/);
+  assert.match(css, /#txAuxCanvas/);
+  assert.match(css, /image-rendering:pixelated/);
   const classic = await readFile(root('js/tx-profile-policy.js'), 'utf8');
   assert.match(classic, /canvas\.style\.imageRendering = 'pixelated'/);
 });
 
-test('PWA v2.5 precaches tracked sampler and Classic policy', async () => {
+test('PWA v2.6 precaches tracked sampler, Classic policy and AUX runtime', async () => {
   const sw = await readFile(root('sw.js'), 'utf8');
-  assert.match(sw, /v2\.5\.0-tracked-rx/);
+  assert.match(sw, /v2\.6\.0-decimen-aux-repair/);
   assert.match(sw, /\.\/js\/tracked-qr\.js/);
   assert.match(sw, /\.\/js\/tx-profile-policy\.js/);
+  assert.match(sw, /\.\/js\/tx-aux-repair\.js/);
+  assert.match(sw, /\.\/js\/aux-repair\.js/);
 });
