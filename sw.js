@@ -5,7 +5,8 @@
 // qcolortrasfer-v2.7.0-multi-aux-overlay
 // qcolortrasfer-v2.8.0-refined-tracked-qar2
 // qcolortrasfer-v2.9.0-chroma-fountain
-const CACHE = 'qcolortrasfer-v3.0.0-dual-main-color-fast-rx';
+// qcolortrasfer-v3.0.0-dual-main-color-fast-rx
+const CACHE = 'qcolortrasfer-v3.1.0-main-color-valid-luma';
 
 const CORE = [
   './', './index.html', './styles.css', './tx-flow.css', './manifest.webmanifest',

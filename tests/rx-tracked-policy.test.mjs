@@ -26,10 +26,10 @@ test('v3 browser bridge forwards cached geometry without main-thread phase work'
   assert.match(js,/AuxRepairAssembler/);assert.match(js,/findCompatibleFountainDecoder/);assert.match(js,/injectSourceBlock/);assert.match(js,/focusMode: 'continuous'/);
 });
 
-test('phase refinement is owned by worker wrapper and known CHROMA can bypass ZXing',async()=>{
+test('phase refinement stays in worker and MAIN COLOR has a native side path',async()=>{
   const js=await readFile(root('js/chroma/qr-worker.js'),'utf8');
-  assert.match(js,/refineTrackedPhase/);assert.match(js,/phaseLockEvent/);assert.match(js,/PHASE_EVERY_CHROMA_CROPS = 4/);
-  assert.match(js,/if\(hinted\)/);assert.match(js,/decodeChromaRasterFast/);assert.match(js,/const base=await runBase/);
+  assert.match(js,/refineTrackedPhase/);assert.match(js,/phaseLockEvent/);assert.match(js,/PHASE_EVERY_CHROMA_CROPS\s*=\s*4/);
+  assert.match(js,/if\(hinted\)/);assert.match(js,/decodeChromaRasterFast/);assert.match(js,/const base=await runBase/);assert.match(js,/isNativeChromaPacket/);
 });
 
 test('camera runtime expands 60 and 30 exact to ideal before app fallback and gates saturated frames',async()=>{
@@ -53,9 +53,9 @@ test('multi QR optical view keeps smooth CSS scaling while Classic remains pixel
   const classic=await readFile(root('js/tx-profile-policy.js'),'utf8');assert.match(classic,/canvas\.style\.imageRendering = 'pixelated'/);
 });
 
-test('PWA v3 precaches runtime gates, dual MAIN and direct CHROMA decoder',async()=>{
+test('PWA v3.1 precaches runtime gates, MAIN COLOR and direct chroma decoder',async()=>{
   const sw=await readFile(root('sw.js'),'utf8');
-  assert.match(sw,/v3\.0\.0-dual-main-color-fast-rx/);assert.match(sw,/\.\/js\/rx-v3-runtime\.js/);
+  assert.match(sw,/v3\.1\.0-main-color-valid-luma/);assert.match(sw,/\.\/js\/rx-v3-runtime\.js/);
   assert.match(sw,/\.\/js\/tx-dual-main-color\.js/);assert.match(sw,/\.\/js\/chroma-fast-decoder\.js/);
   assert.match(sw,/\.\/js\/tracked-phase\.js/);assert.match(sw,/\.\/js\/rx-detection-overlay\.js/);
 });

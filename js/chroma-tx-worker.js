@@ -1,13 +1,13 @@
-// qcolortrasfer CHROMA FOUNTAIN raster worker v2.9 (MIT).
+// qcolortrasfer MAIN COLOR raster worker v3.1 (MIT).
 import { createChromaRaster, prepareChromaTemplate } from './chroma-fountain.js';
 
 self.onmessage=async event=>{
-  const {id,generation,packet}=event.data||{};
+  const {id,generation,basePacket,chromaPacket}=event.data||{};
   if(id==null)return;
   const started=globalThis.performance?.now?.()??Date.now();
   try{
-    const bytes=new Uint8Array(packet);
-    const raster=await createChromaRaster(bytes);
+    const base=new Uint8Array(basePacket),chroma=new Uint8Array(chromaPacket);
+    const raster=await createChromaRaster(base,chroma);
     const elapsed=(globalThis.performance?.now?.()??Date.now())-started;
     self.postMessage({id,generation,raster:{...raster,pixels:raster.pixels.buffer},generationMs:elapsed},[raster.pixels.buffer]);
   }catch(error){
