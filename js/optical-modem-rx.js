@@ -4,7 +4,8 @@
 
 import { FountainDecoder } from './fountain.js';
 import { unpackFileContainerV2, sha256Hex } from './protocol.js';
-import { MODEM_CHUNK_BYTES, MODEM_GRID_W, MODEM_GRID_H } from './optical-modem-codec.js';
+import { MODEM_GRID_W, MODEM_GRID_H } from './optical-modem-codec.js';
+import { MODEM_RS_CHUNK_BYTES as MODEM_CHUNK_BYTES } from './optical-modem-rs-codec.js';
 
 const $=id=>document.getElementById(id),MAX_WORKERS=4,LOCK_FULL_MS=1500;
 
@@ -37,7 +38,7 @@ function install(){
   function updateStats(){
     const elapsed=Math.max(.001,(performance.now()-startedAt)/1000),symps=decoder?decoder.framesNew/elapsed:0,kibs=decoder?decoder.framesNew*MODEM_CHUNK_BYTES/elapsed/1024:0,hitPct=attempts?Math.round(hits*100/attempts):0;
     const sync=hits?Math.round(syncSum*100/hits):0,cal=hits?(calSum/hits).toFixed(3):'—',margin=hits?(marginSum/hits).toFixed(4):'—',probeSync=Math.round(lastProbeSync*100);
-    stats.textContent=`MODEM ${hits}/${attempts} (${hitPct}%) · ${symps.toFixed(1)} simboli/s · ${kibs.toFixed(1)} KiB/s · stage ${lastStage} · anchor-visti ${anchorSeen} · finder ${lastFinder?lastFinder.toFixed(1):'—'} · probe-sync ${lastProbeSync?probeSync+'%':'—'} · detector ${detectorEma?detectorEma.toFixed(1):'—'} ms · detect ${detectHits} · tracked ${trackedHits} · anchor ${lastAnchor} · pilot ${lastPilot}/4 · phase ${lastPhase?Math.round(lastPhase*100)+'%':'—'} · control ${lastControlAccuracy?Math.round(lastControlAccuracy*100)+'%':'—'} · cal-now ${lastCal?lastCal.toFixed(3):'—'} · margin-now ${lastMargin?lastMargin.toFixed(4):'—'} · trial-corr ${lastTrialCorrected} · FEC corr ${corrected} · sync ${sync}% · cal ${cal} · margin ${margin} · resample ${resampled} · decode ${decodeEma?decodeEma.toFixed(1):'—'} ms · worker ${workerEma?workerEma.toFixed(1):'—'} ms · pool ${workers.length} · early-drop ${earlyDrop} · camera ${cameraLabel}${lastDecodeError?` · fail ${lastDecodeError.slice(0,28)}`:''}${lastControl?` · seq~${lastControl.sequenceLow}`:''}`;
+    stats.textContent=`MODEM RS ${hits}/${attempts} (${hitPct}%) · ${symps.toFixed(1)} simboli/s · ${kibs.toFixed(1)} KiB/s · stage ${lastStage} · anchor-visti ${anchorSeen} · finder ${lastFinder?lastFinder.toFixed(1):'—'} · probe-sync ${lastProbeSync?probeSync+'%':'—'} · detector ${detectorEma?detectorEma.toFixed(1):'—'} ms · detect ${detectHits} · tracked ${trackedHits} · anchor ${lastAnchor} · pilot ${lastPilot}/4 · phase ${lastPhase?Math.round(lastPhase*100)+'%':'—'} · control ${lastControlAccuracy?Math.round(lastControlAccuracy*100)+'%':'—'} · cal-now ${lastCal?lastCal.toFixed(3):'—'} · margin-now ${lastMargin?lastMargin.toFixed(4):'—'} · RS corr ${lastTrialCorrected} / total ${corrected} · sync ${sync}% · cal ${cal} · margin ${margin} · resample ${resampled} · decode ${decodeEma?decodeEma.toFixed(1):'—'} ms · worker ${workerEma?workerEma.toFixed(1):'—'} ms · pool ${workers.length} · early-drop ${earlyDrop} · camera ${cameraLabel}${lastDecodeError?` · fail ${lastDecodeError.slice(0,34)}`:''}`;
     if(progress)progress.value=decoder?decoder.progress*100:0;
   }
 
@@ -54,7 +55,7 @@ function install(){
     if(completed||!decoder?.complete)return;completed=true;try{
       const container=decoder.reconstruct(),file=unpackFileContainerV2(container),hash=await sha256Hex(file.bytes);if(file.sha256&&hash&&file.sha256!==hash)throw new Error('SHA-256 finale non corrisponde');
       downloadUrl=URL.createObjectURL(new Blob([file.bytes]));if(download){download.href=downloadUrl;download.download=file.fileName;download.textContent=`SCARICA ${file.fileName} (${(file.fileLength/1024).toFixed(1)} KiB)`;download.hidden=false;}
-      const elapsed=Math.max(.001,(performance.now()-startedAt)/1000);setStatus(`COMPLETATO MODEM · ${(file.fileLength/1024).toFixed(1)} KiB · ${elapsed.toFixed(2)} s · ${(file.fileLength/elapsed/1024).toFixed(1)} KiB/s file · SHA-256 OK · ${decoder.framesNew} simboli distinti`,'ok');if(progress)progress.value=100;
+      const elapsed=Math.max(.001,(performance.now()-startedAt)/1000);setStatus(`COMPLETATO MODEM RS · ${(file.fileLength/1024).toFixed(1)} KiB · ${elapsed.toFixed(2)} s · ${(file.fileLength/elapsed/1024).toFixed(1)} KiB/s file · SHA-256 OK · ${decoder.framesNew} simboli distinti`,'ok');if(progress)progress.value=100;
     }catch(error){completed=false;setStatus(`OPTICAL MODEM finale: ${error.message}`,'error');}
   }
 
@@ -72,10 +73,10 @@ function install(){
       anchorSeen++;lastFinder=Number(d.finderScore)||lastFinder;lastProbeSync=Number(d.syncAccuracy)||lastProbeSync;lastAnchor=d.anchorSet||lastAnchor||'outer';
       if(d.markers){tracked={markers:d.markers,rotation:d.rotation,anchorSet:d.anchorSet||'outer'};misses=0;drawOverlay(d.markers,'#f5c451');}
     }
-    if(d.ok){hits++;if(d.detected)detectHits++;else trackedHits++;misses=0;lastAnchor=d.anchorSet||'outer';tracked={markers:d.markers,rotation:d.rotation,anchorSet:lastAnchor};lastFull=d.detected?performance.now():lastFull;corrected+=Number(d.corrected)||0;resampled+=Number(d.resampled)||0;syncSum+=Number(d.syncAccuracy)||0;calSum+=Number(d.calibrationSeparation)||0;marginSum+=Number(d.margin)||0;decodeEma=decodeEma?decodeEma*.88+Number(d.decodeMs||0)*.12:Number(d.decodeMs||0);lastControl=d.control||lastControl;drawOverlay(d.markers);acceptPacket(d.packet);
-      if(!completed)setStatus(`OPTICAL MODEM agganciato · ${MODEM_GRID_W}×${MODEM_GRID_H} · 4 colori · SYNC ${lastAnchor} · ${decoder?Math.round(decoder.progress*100):0}%`,'ok');
+    if(d.ok){hits++;if(d.detected)detectHits++;else trackedHits++;misses=0;lastAnchor=d.anchorSet||'outer';tracked={markers:d.markers,rotation:d.rotation,anchorSet:lastAnchor};lastFull=d.detected?performance.now():lastFull;corrected+=Number(d.corrected)||0;resampled+=Number(d.resampled)||0;syncSum+=Number(d.syncAccuracy)||0;calSum+=Number(d.calibrationSeparation)||0;marginSum+=Number(d.margin)||0;decodeEma=decodeEma?decodeEma*.88+Number(d.decodeMs||0)*.12:Number(d.decodeMs||0);drawOverlay(d.markers);acceptPacket(d.packet);
+      if(!completed)setStatus(`OPTICAL MODEM RS agganciato · ${MODEM_GRID_W}×${MODEM_GRID_H} · 4 colori · SYNC ${lastAnchor} · ${decoder?Math.round(decoder.progress*100):0}%`,'ok');
     }else if(!d.anchorFound){misses++;if(misses>=8)tracked=null;}
-    if(!d.ok&&attempts%20===0)setStatus(`OPTICAL MODEM: stage ${lastStage} · anchor ${anchorSeen} · sync ${lastProbeSync?Math.round(lastProbeSync*100)+'%':'—'} · pilot ${lastPilot}/4 · phase ${lastPhase?Math.round(lastPhase*100)+'%':'—'} · cal ${lastCal?lastCal.toFixed(3):'—'} · worker ${workerEma.toFixed(0)} ms`,'warn');
+    if(!d.ok&&attempts%20===0)setStatus(`OPTICAL MODEM RS: stage ${lastStage} · anchor ${anchorSeen} · sync ${lastProbeSync?Math.round(lastProbeSync*100)+'%':'—'} · pilot ${lastPilot}/4 · phase ${lastPhase?Math.round(lastPhase*100)+'%':'—'} · cal ${lastCal?lastCal.toFixed(3):'—'} · worker ${workerEma.toFixed(0)} ms`,'warn');
     updateStats();
   }
 
@@ -92,13 +93,13 @@ function install(){
   }
 
   async function start(){
-    if(running||!enabled())return;try{stopTracks(video.srcObject);resetCounters();stream=await getCamera();video.srcObject=stream;await video.play();running=true;ensureWorkers();setStatus(`Camera ${cameraLabel} · OPTICAL MODEM: cerca i 4 SYNC e calibra R/G/B/M…`,'ok');raf=requestAnimationFrame(capture);
+    if(running||!enabled())return;try{stopTracks(video.srcObject);resetCounters();stream=await getCamera();video.srcObject=stream;await video.play();running=true;ensureWorkers();setStatus(`Camera ${cameraLabel} · OPTICAL MODEM RS: cerca i 4 SYNC e calibra R/G/B/M…`,'ok');raf=requestAnimationFrame(capture);
     }catch(error){running=false;setStatus(`OPTICAL MODEM camera: ${error.message}`,'error');}
   }
   function stop({quiet=false}={}){running=false;if(raf)cancelAnimationFrame(raf);raf=0;stopTracks(stream);stream=null;if(video.srcObject){stopTracks(video.srcObject);video.srcObject=null;}terminateWorkers();clearOverlay();if(!quiet&&enabled())setStatus('OPTICAL MODEM RX fermato.');}
   function reset(){const resume=running;stop({quiet:true});resetCounters();if(resume)void start();else setStatus('OPTICAL MODEM RX azzerato. Premi CAMERA START.','ok');}
 
-  method.addEventListener('change',()=>{if(enabled()){stopTracks(video.srcObject);resetCounters();setStatus('OPTICAL MODEM RX pronto: motore indipendente, 4 fiducial SYNC, calibrazione colore e FEC. Premi CAMERA START.','ok');}else{stop({quiet:true});setStatus("Avvia la fotocamera e inquadra l'intera griglia QR.");}});
+  method.addEventListener('change',()=>{if(enabled()){stopTracks(video.srcObject);resetCounters();setStatus('OPTICAL MODEM RS RX pronto: 4 fiducial SYNC, calibrazione colore e RS(255,223). Premi CAMERA START.','ok');}else{stop({quiet:true});setStatus("Avvia la fotocamera e inquadra l'intera griglia QR.");}});
   document.addEventListener('click',event=>{if(!enabled())return;const id=event.target?.id;if(!['startRx','stopRx','resetRx'].includes(id))return;event.preventDefault();event.stopImmediatePropagation();if(id==='startRx')void start();else if(id==='resetRx')reset();else stop();},{capture:true});
   window.addEventListener('resize',()=>{if(enabled())clearOverlay();});
 }
