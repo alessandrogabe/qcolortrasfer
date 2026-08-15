@@ -10,7 +10,8 @@
 // qcolortrasfer-v3.2.0-optical-modem
 // qcolortrasfer-v3.2.1-real-sync-detector
 // qcolortrasfer-v3.2.2-subpixel-modem-desktop
-const CACHE = 'qcolortrasfer-v3.3.0-rs-optical-modem';
+// qcolortrasfer-v3.3.0-rs-optical-modem
+const CACHE = 'qcolortrasfer-v3.3.1-area-strong-rs-desktop';
 
 const CORE = [
   './', './index.html', './styles.css', './tx-flow.css', './manifest.webmanifest',
