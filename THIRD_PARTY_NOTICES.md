@@ -33,7 +33,7 @@ Sono inoltre implementazioni originali qcolortrasfer/MIT:
 - la ricostruzione del QR cromatico C1 dalla geometria del QR base;
 - il profilo sperimentale 8 stati / 3 canali;
 - MAIN COLOR, in cui la luminanza resta un QR standard valido e un bit fountain aggiuntivo è modulato cromaticamente nelle stesse celle;
-- OPTICAL MODEM v3.2, inclusi formato 192×108, fiducial SYNC, detector dedicato, calibrazione colore per frame, header di controllo, classificatore cromatico, interleaving/FEC e pipeline RX/TX dedicata.
+- OPTICAL MODEM v3.2/v3.3, inclusi formato 192×108, fiducial SYNC, detector dedicato, calibrazione colore per frame, header di controllo, classificatore cromatico, interleaving/Reed–Solomon e pipeline RX/TX dedicata.
 
 ## qrcode 1.5.4
 Repository: https://github.com/soldair/node-qrcode
@@ -57,7 +57,29 @@ License: Apache License 2.0.
 Repository: https://github.com/sz3/libcimbar
 License: MPL-2.0.
 
-Riferimento concettuale per codici ottici a colori. In particolare, durante la progettazione di OPTICAL MODEM v3.2 sono stati studiati a livello architetturale i concetti generali di griglia di tile/celle cromatiche, protezione FEC, interleaving e combinazione con un fountain code. **Nessun sorgente MPL-2.0 di libcimbar è copiato, tradotto, adattato o incorporato** nel motore qcolortrasfer.
+### Uso concettuale nel motore qcolor OPTICAL MODEM
+
+Durante la progettazione di OPTICAL MODEM v3.2/v3.3 sono stati studiati a livello architetturale i concetti generali di griglia di tile/celle cromatiche, protezione FEC, interleaving e combinazione con un fountain code. Il motore `OPTICAL MODEM · COLOR GRID EXP` di qcolortrasfer resta un'implementazione originale MIT: detector, frame format, palette, calibrazione, FEC e decoder sono file qcolor separati e non incorporano sorgente libcimbar.
+
+### CIMBAR ENGINE EXP — runtime ufficiale vendorizzato
+
+Dalla v3.4 qcolortrasfer include anche una modalità opzionale separata, `CIMBAR ENGINE · LIBCIMBAR WASM`, che usa **direttamente il runtime Web/WASM ufficiale di libcimbar v0.6.7c**. Questa modalità non è una reimplementazione qcolor del decoder Cimbar: il sender, il receiver, il decoder C++ compilato in WebAssembly, il protocollo/FEC/fountain e la decompressione sono quelli distribuiti dagli autori di libcimbar.
+
+I file upstream sono mantenuti separati sotto `vendor/libcimbar/v0.6.7c/` e restano soggetti alla Mozilla Public License 2.0. Non sono rilicenziati MIT e non vengono modificati dall'adapter qcolor.
+
+Provenienza riproducibile della copia distribuita:
+
+- tag upstream: `v0.6.7c`;
+- release commit dichiarato upstream: `e5bebd0`;
+- asset ufficiale: `cimbar.wasm.tar.gz`;
+- SHA-256 asset ufficiale: `776a8d71c8bc782eda769c4c0b309d805ca13cbd78df0ed0373cfa9ac44ef20e`;
+- sorgente corrispondente MPL-2.0: https://github.com/sz3/libcimbar/tree/v0.6.7c;
+- licenza distribuita localmente: `vendor/libcimbar/LICENSE-MPL-2.0.txt`;
+- notice e manifest dei file estratti: `vendor/libcimbar/SOURCE-NOTICE.md` e `vendor/libcimbar/MANIFEST.sha256`.
+
+`js/cimbar-engine.js` è invece codice adapter originale qcolortrasfer/MIT: seleziona il motore, apre le pagine ufficiali same-origin, passa il file scelto al sender tramite l'API pubblica Web (`Main.importFile`) e osserva le callback del receiver per telemetria. Non modifica i file MPL del runtime.
+
+Il runtime libcimbar incorpora a sua volta dipendenze upstream usate dal progetto, incluse Wirehair per il fountain coding, zstd e OpenCV; i rispettivi termini/licenze rimangono quelli dei progetti originali. Per la composizione esatta e il corresponding source della build distribuita si fa riferimento al tag libcimbar v0.6.7c sopra indicato.
 
 ## Complementary Color Barcode / Optical Camera Communication research
 
@@ -69,4 +91,4 @@ OPTICAL MODEM implementa autonomamente tali principi con fiducial, sequenza SYNC
 
 ChromaCode è stato studiato come ulteriore riferimento concettuale per la modulazione cromatica nelle comunicazioni screen-to-camera e per i relativi obiettivi di throughput.
 
-La codifica, il formato frame, il detector, il FEC, la palette e il decoder di OPTICAL MODEM v3.2 sono implementazioni originali qcolortrasfer/MIT; nessun codice ChromaCode è copiato o adattato.
+La codifica, il formato frame, il detector, il FEC, la palette e il decoder di OPTICAL MODEM v3.2/v3.3 sono implementazioni originali qcolortrasfer/MIT; nessun codice ChromaCode è copiato o adattato.
