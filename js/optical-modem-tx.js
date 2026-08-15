@@ -5,6 +5,7 @@ import { FountainEncoder } from './fountain.js';
 import { packFileContainerV2, randomStreamId, sha256Hex } from './protocol.js';
 import { enterTxOpticalView, exitTxOpticalView } from './tx-optical-view.js';
 import { MODEM_CHUNK_BYTES, MODEM_PACKET_BYTES, MODEM_RASTER_W, MODEM_RASTER_H, MODEM_STATES, MODEM_PALETTE, encodeModemPacket } from './optical-modem-codec.js';
+import { computeModemDisplayLayout, fitModemRaster } from './optical-modem-layout.js';
 
 const LOOKAHEAD=3,DEFAULT_FPS=60,MAX_DPR=4,$=id=>document.getElementById(id);
 
@@ -24,19 +25,21 @@ function install(){
   function selectedFps(){return Math.max(8,Math.min(60,Number(fps.value)||DEFAULT_FPS));}
   function theoreticalKiBs(){return MODEM_CHUNK_BYTES*selectedFps()/1024;}
   function workerTarget(){const hc=Math.max(2,Math.floor(Number(navigator.hardwareConcurrency)||4));return hc>=6?4:hc>=4?3:2;}
-  function stageBudget(){const s=getComputedStyle(stage),px=v=>Number.parseFloat(v)||0;return{width:Math.max(1,stage.clientWidth-px(s.paddingLeft)-px(s.paddingRight)),height:Math.max(1,stage.clientHeight-px(s.paddingTop)-px(s.paddingBottom))};}
-  function choosePortrait(){const b=stageBudget(),dpr=Math.max(1,Math.min(MAX_DPR,Number(devicePixelRatio)||1));const scaleLandscape=Math.floor(Math.min(b.width*dpr/MODEM_RASTER_W,b.height*dpr/MODEM_RASTER_H));const scalePortrait=Math.floor(Math.min(b.width*dpr/MODEM_RASTER_H,b.height*dpr/MODEM_RASTER_W));return scalePortrait>scaleLandscape;}
+  function opticalDpr(){return Math.max(1,Math.min(MAX_DPR,Number(devicePixelRatio)||1));}
+  function stageBudget(){const s=getComputedStyle(stage),px=v=>Number.parseFloat(v)||0,rect=stage.getBoundingClientRect();const width=rect.width||stage.clientWidth,height=rect.height||stage.clientHeight;return{width:Math.max(1,width-px(s.paddingLeft)-px(s.paddingRight)),height:Math.max(1,height-px(s.paddingTop)-px(s.paddingBottom))};}
+  function displayLayout(){const b=stageBudget();return computeModemDisplayLayout({width:b.width,height:b.height,dpr:opticalDpr(),rasterWidth:MODEM_RASTER_W,rasterHeight:MODEM_RASTER_H});}
+  function choosePortrait(){return displayLayout().rotated;}
   async function requestWake(){if(wakeLock||!('wakeLock'in navigator))return;try{wakeLock=await navigator.wakeLock.request('screen');wakeLock.addEventListener('release',()=>{wakeLock=null;});}catch{}}
   async function releaseWake(){if(!wakeLock)return;try{await wakeLock.release();}catch{}wakeLock=null;}
 
   function render(item){
-    if(!item?.raster)return;current=item;const r=item.raster,b=stageBudget(),dpr=Math.max(1,Math.min(MAX_DPR,Number(devicePixelRatio)||1));const scale=Math.max(1,Math.floor(Math.min(b.width*dpr/r.width,b.height*dpr/r.height)));
+    if(!item?.raster)return;current=item;const r=item.raster,b=stageBudget(),dpr=opticalDpr();const layout=fitModemRaster({width:b.width,height:b.height,dpr,rasterWidth:r.width,rasterHeight:r.height}),scale=layout.scale;
     const staging=document.createElement('canvas');staging.width=r.width;staging.height=r.height;staging.getContext('2d',{alpha:false}).putImageData(new ImageData(r.pixels,r.width,r.height),0,0);
-    canvas.width=r.width*scale;canvas.height=r.height*scale;canvas.style.width=`${canvas.width/dpr}px`;canvas.style.height=`${canvas.height/dpr}px`;canvas.style.maxWidth='none';canvas.style.maxHeight='none';canvas.style.imageRendering='pixelated';canvas.dataset.integerRaster='optical-modem';
+    canvas.width=r.width*scale;canvas.height=r.height*scale;canvas.style.width=`${layout.cssWidth}px`;canvas.style.height=`${layout.cssHeight}px`;canvas.style.maxWidth='none';canvas.style.maxHeight='none';canvas.style.imageRendering='pixelated';canvas.dataset.integerRaster='optical-modem';canvas.dataset.modemLayout=layout.desktop?'desktop-compact':'mobile-fill';
     const ctx=canvas.getContext('2d',{alpha:false});ctx.imageSmoothingEnabled=false;ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(staging,0,0,r.width,r.height,0,0,canvas.width,canvas.height);
-    const elapsed=startedAt?Math.max(.001,(performance.now()-startedAt)/1000):0,actual=elapsed?(shown/elapsed).toFixed(1):'—';
-    if(frame)frame.textContent=`OPTICAL MODEM · ${r.rotated?'PORTRAIT':'LANDSCAPE'} · 192×108 celle · 4 colori · ${MODEM_CHUNK_BYTES} B fountain/frame · Hamming+CRC · ${selectedFps()} fps · ×${scale} px/cella raster · ~${theoreticalKiBs().toFixed(1)} KiB/s offerti · ${actual} frame/s · queue ${queue.length}/${LOOKAHEAD} · miss ${misses} · seq ${item.symbolId}`;
-    if(gridState)gridState.textContent=`MODEM 192×108 · ${MODEM_STATES} stati · ×${scale}`;
+    const elapsed=startedAt?Math.max(.001,(performance.now()-startedAt)/1000):0,actual=elapsed?(shown/elapsed).toFixed(1):'—',layoutName=layout.desktop?'DESKTOP COMPACT':'MOBILE FILL';
+    if(frame)frame.textContent=`OPTICAL MODEM · ${r.rotated?'PORTRAIT':'LANDSCAPE'} · ${layoutName} ${Math.round(layout.cssWidth)}×${Math.round(layout.cssHeight)} CSS px · 192×108 celle · 4 colori · ${MODEM_CHUNK_BYTES} B fountain/frame · Hamming+CRC · ${selectedFps()} fps · ×${scale} raster · ~${theoreticalKiBs().toFixed(1)} KiB/s offerti · ${actual} frame/s · queue ${queue.length}/${LOOKAHEAD} · miss ${misses} · seq ${item.symbolId}`;
+    if(gridState)gridState.textContent=`MODEM 192×108 · ${MODEM_STATES} stati · ×${scale} · ${layout.desktop?'PC compatto':'mobile'}`;
     if(badge)badge.textContent='OPTICAL MODEM · R/G/B/M · FEC';
   }
 
@@ -64,14 +67,19 @@ function install(){
   }
 
   async function start(){
-    if(!enabled()||running)return;try{await prepare();running=true;generation++;queue=[];shown=0;misses=0;startedAt=performance.now();await requestWake();ensureWorkers();pump();const wait=performance.now();while(running&&!queue.length&&performance.now()-wait<3000)await new Promise(r=>setTimeout(r,8));if(!running)return;const first=queue.shift();if(!first)throw new Error('lookahead modem non disponibile');render(first);shown++;pump();setStatus(`OPTICAL MODEM attivo · 192×108 · 4 colori · ${selectedFps()} fps · ${MODEM_CHUNK_BYTES} B fountain/frame · ~${theoreticalKiBs().toFixed(0)} KiB/s offerti.`,'ok');
+    if(!enabled()||running)return;try{await prepare();running=true;generation++;queue=[];shown=0;misses=0;startedAt=performance.now();await requestWake();
+      // The optical shell is moved into a fixed overlay immediately before this
+      // function. Wait one paint so desktop stage measurements are final before
+      // choosing orientation/raster size for the worker queue.
+      await new Promise(resolve=>requestAnimationFrame(()=>resolve()));
+      ensureWorkers();pump();const wait=performance.now();while(running&&!queue.length&&performance.now()-wait<3000)await new Promise(r=>setTimeout(r,8));if(!running)return;const first=queue.shift();if(!first)throw new Error('lookahead modem non disponibile');render(first);shown++;pump();const layout=displayLayout();setStatus(`OPTICAL MODEM attivo · ${layout.desktop?'layout PC compatto':'layout mobile'} · 192×108 · 4 colori · ${selectedFps()} fps · ${MODEM_CHUNK_BYTES} B fountain/frame · ~${theoreticalKiBs().toFixed(0)} KiB/s offerti.`,'ok');
       let nextAt=performance.now()+1000/selectedFps();const tick=now=>{if(!running||!enabled())return;raf=requestAnimationFrame(tick);const interval=1000/selectedFps();if(now<nextAt)return;const item=queue.shift();pump();if(!item){misses++;nextAt=now+interval;return;}render(item);shown++;nextAt+=interval;if(now-nextAt>3*interval)nextAt=now+interval;};raf=requestAnimationFrame(tick);
     }catch(error){running=false;setStatus(`OPTICAL MODEM: ${error.message}`,'error');}
   }
   function stop({quiet=false}={}){running=false;generation++;if(raf)cancelAnimationFrame(raf);raf=0;terminateWorkers();void releaseWake();if(!quiet&&enabled())setStatus('OPTICAL MODEM in pausa. Il frame corrente resta visibile.');}
   async function resetTx(){const resume=running;stop({quiet:true});session=null;current=null;try{await prepare(true);if(resume)await start();else setStatus('OPTICAL MODEM resettato. Premi START.','ok');}catch(e){setStatus(`OPTICAL MODEM: ${e.message}`,'error');}}
 
-  function enter(){if(active)return;active=true;savedPayload=payload.value;savedFps=fps.value;savedColor=colorMode?.value;savedGrid=grid?.value;let opt=[...payload.options].find(o=>o.value===String(MODEM_CHUNK_BYTES));if(!opt){opt=new Option(`${MODEM_CHUNK_BYTES} B · MODEM fisso`,String(MODEM_CHUNK_BYTES));opt.dataset.modem='1';payload.add(opt);}payload.value=String(MODEM_CHUNK_BYTES);payload.disabled=true;if(colorMode)colorMode.disabled=true;if(grid)grid.disabled=true;fps.value=String(DEFAULT_FPS);document.body.dataset.txVariant='optical-modem';session=null;const palette=MODEM_PALETTE.map(c=>`rgb(${c.join(',')})`).join(' · ');setStatus(`OPTICAL MODEM pronto: motore separato 192×108, fiducial propri, calibrazione per frame, 4 colori R/G/B/M, Hamming interlacciato + CRC + fountain. Nessun QR/ZXing. ${palette}.`,'ok');}
+  function enter(){if(active)return;active=true;savedPayload=payload.value;savedFps=fps.value;savedColor=colorMode?.value;savedGrid=grid?.value;let opt=[...payload.options].find(o=>o.value===String(MODEM_CHUNK_BYTES));if(!opt){opt=new Option(`${MODEM_CHUNK_BYTES} B · MODEM fisso`,String(MODEM_CHUNK_BYTES));opt.dataset.modem='1';payload.add(opt);}payload.value=String(MODEM_CHUNK_BYTES);payload.disabled=true;if(colorMode)colorMode.disabled=true;if(grid)grid.disabled=true;fps.value=String(DEFAULT_FPS);document.body.dataset.txVariant='optical-modem';session=null;const palette=MODEM_PALETTE.map(c=>`rgb(${c.join(',')})`).join(' · ');setStatus(`OPTICAL MODEM pronto: motore separato 192×108, fiducial propri, calibrazione per frame, 4 colori R/G/B/M, Hamming interlacciato + CRC + fountain. Layout PC compatto automatico; mobile usa l'area disponibile. Nessun QR/ZXing. ${palette}.`,'ok');}
   function leave(){if(!active)return;active=false;stop({quiet:true});payload.disabled=false;colorMode&&(colorMode.disabled=false);grid&&(grid.disabled=false);const opt=[...payload.options].find(o=>o.dataset.modem==='1');if(opt)opt.remove();if([...payload.options].some(o=>o.value===savedPayload))payload.value=savedPayload;if([...fps.options].some(o=>o.value===savedFps))fps.value=savedFps;if(colorMode&&[...colorMode.options].some(o=>o.value===savedColor))colorMode.value=savedColor;if(grid&&[...grid.options].some(o=>o.value===savedGrid))grid.value=savedGrid;delete document.body.dataset.txVariant;}
 
   // tx-profile-policy owns the txMethod select and only understands classic or
