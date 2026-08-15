@@ -80,13 +80,13 @@ test('dedicated detector acquires the same modem when the display is portrait',a
 });
 
 test('standalone modem engines do not invoke QR or ZXing payload paths',async()=>{
-  const codec=await readFile(root('js/optical-modem-codec.js'),'utf8'),detector=await readFile(root('js/optical-modem-detector.js'),'utf8'),tx=await readFile(root('js/optical-modem-tx.js'),'utf8'),rx=await readFile(root('js/optical-modem-rx.js'),'utf8'),worker=await readFile(root('js/optical-modem-worker.js'),'utf8');
+  const codec=await readFile(root('js/optical-modem-codec.js'),'utf8'),detector=await readFile(root('js/optical-modem-detector.js'),'utf8'),color=await readFile(root('js/optical-modem-color-decoder.js'),'utf8'),tx=await readFile(root('js/optical-modem-tx.js'),'utf8'),rx=await readFile(root('js/optical-modem-rx.js'),'utf8'),worker=await readFile(root('js/optical-modem-worker.js'),'utf8');
   const dependency=/readBarcodes\s*\(|QRCode\.create\s*\(|(?:from|import).*zxing/i;
-  assert.doesNotMatch(codec,dependency);assert.doesNotMatch(detector,dependency);assert.doesNotMatch(tx,dependency);assert.doesNotMatch(tx,/encodeAuxRepairPacket/);assert.doesNotMatch(rx,dependency);assert.doesNotMatch(rx,/qr-worker/);
-  assert.match(detector,/TARGET_PLANE_MIN/);assert.match(detector,/detectOuterModemMarkers/);assert.match(codec,/Hamming\(15,11\)/);assert.match(rx,/stage \$\{lastStage\}/);assert.match(worker,/finder\/sync/);assert.match(worker,/color\/fec/);
+  assert.doesNotMatch(codec,dependency);assert.doesNotMatch(detector,dependency);assert.doesNotMatch(color,dependency);assert.doesNotMatch(tx,dependency);assert.doesNotMatch(tx,/encodeAuxRepairPacket/);assert.doesNotMatch(rx,dependency);assert.doesNotMatch(rx,/qr-worker/);
+  assert.match(detector,/TARGET_PLANE_MIN/);assert.match(detector,/detectOuterModemMarkers/);assert.match(codec,/Hamming\(15,11\)/);assert.match(color,/rgbBilinear/);assert.match(color,/fec\/crc/);assert.match(rx,/stage \$\{lastStage\}/);assert.match(worker,/finder\/sync/);assert.match(worker,/decodeOpticalModemColor/);
 });
 
 test('UI shell and PWA load all standalone modem runtime modules',async()=>{
   const ui=await readFile(root('js/ui-shell.js'),'utf8'),sw=await readFile(root('sw.js'),'utf8');assert.match(ui,/optical-modem-tx/);assert.match(ui,/optical-modem-rx/);
-  assert.match(sw,/v3\.2\.1-real-sync-detector/);for(const name of ['optical-modem-codec','optical-modem-detector','optical-modem-tx-worker','optical-modem-tx','optical-modem-worker','optical-modem-rx'])assert.match(sw,new RegExp(name));
+  assert.match(sw,/v3\.2\.2-subpixel-modem-desktop/);for(const name of ['optical-modem-codec','optical-modem-detector','optical-modem-layout','optical-modem-color-decoder','optical-modem-tx-worker','optical-modem-tx','optical-modem-worker','optical-modem-rx'])assert.match(sw,new RegExp(name));
 });
