@@ -15,6 +15,7 @@ import './tx-chroma-fountain.js';
 import './tx-dual-main-color.js';
 import './optical-modem-tx.js';
 import './optical-modem-rx.js';
+import './cimbar-engine.js';
 
 const homeView = document.getElementById('homeView');
 const workspaceView = document.getElementById('workspaceView');
