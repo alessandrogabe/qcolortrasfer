@@ -7,36 +7,41 @@ import {
   MODEM_DESKTOP_MAX_CSS_WIDTH,
   MODEM_DESKTOP_MAX_CSS_HEIGHT,
   MODEM_DESKTOP_MAX_CELL_CSS,
+  MODEM_DESKTOP_VIEWPORT_FRACTION,
 } from '../js/optical-modem-layout.js';
 import { MODEM_RASTER_W, MODEM_RASTER_H } from '../js/optical-modem-codec.js';
 
 function layout(width,height,dpr=1){return computeModemDisplayLayout({width,height,dpr,rasterWidth:MODEM_RASTER_W,rasterHeight:MODEM_RASTER_H});}
 
-test('desktop modem no longer expands to the full 1920x1080 optical stage',()=>{
+test('desktop modem is a compact centered camera field rather than a full-screen raster',()=>{
   const l=layout(1920,1000,1);
   assert.equal(l.desktop,true);
   assert.equal(l.rotated,false);
+  assert.equal(l.scale,4);
+  assert.equal(l.cssWidth,MODEM_RASTER_W*4);
+  assert.equal(l.cssHeight,MODEM_RASTER_H*4);
   assert.ok(l.cssWidth<=MODEM_DESKTOP_MAX_CSS_WIDTH);
   assert.ok(l.cssHeight<=MODEM_DESKTOP_MAX_CSS_HEIGHT);
-  assert.ok(l.scale<=MODEM_DESKTOP_MAX_CELL_CSS);
-  assert.ok(l.cssWidth<1920*.7,'desktop field should leave substantial camera-friendly surround');
+  assert.ok(l.cssWidth<1920*.5,'desktop field must leave a large white optical surround');
 });
 
-test('ordinary laptop keeps the modem entirely inside a compact centered raster',()=>{
+test('ordinary laptop keeps all four SYNC markers inside a compact raster with surround',()=>{
   const l=layout(1366,680,1);
   assert.equal(l.desktop,true);
   assert.equal(l.rotated,false);
-  assert.ok(l.cssWidth<=1040&&l.cssHeight<=680);
-  assert.ok(l.cssWidth<=1366&&l.cssHeight<=680);
-  assert.ok(l.scale>=4,'laptop cells should still be optically large');
+  assert.equal(l.scale,4);
+  assert.ok(l.cssWidth<=1366*MODEM_DESKTOP_VIEWPORT_FRACTION+1e-6);
+  assert.ok(l.cssHeight<=680*MODEM_DESKTOP_VIEWPORT_FRACTION+1e-6);
+  assert.ok(l.cssWidth<=MODEM_DESKTOP_MAX_CSS_WIDTH&&l.cssHeight<=MODEM_DESKTOP_MAX_CSS_HEIGHT);
 });
 
-test('high-DPI desktop caps CSS cell size while preserving integer backing scale',()=>{
+test('high-DPI desktop keeps the same approximate CSS field with integer backing scale',()=>{
   const l=layout(1800,950,2);
   assert.equal(l.desktop,true);
   assert.equal(l.rotated,false);
-  assert.ok(l.scale<=MODEM_DESKTOP_MAX_CELL_CSS*2);
-  assert.ok(l.cssWidth<=MODEM_DESKTOP_MAX_CSS_WIDTH);
+  assert.equal(l.scale,MODEM_DESKTOP_MAX_CELL_CSS*2);
+  assert.equal(l.cssWidth,MODEM_RASTER_W*MODEM_DESKTOP_MAX_CELL_CSS);
+  assert.equal(l.cssHeight,MODEM_RASTER_H*MODEM_DESKTOP_MAX_CELL_CSS);
   assert.equal(Number.isInteger(l.scale),true);
 });
 
@@ -54,9 +59,10 @@ test('desktop classification requires both sufficient width and height',()=>{
   assert.equal(isDesktopModemViewport(1200,430),false);
 });
 
-test('fixed raster fitting never exceeds desktop caps',()=>{
+test('fixed raster fitting never exceeds desktop caps on ultrawide monitors',()=>{
   const f=fitModemRaster({width:2560,height:1360,dpr:1,rasterWidth:MODEM_RASTER_W,rasterHeight:MODEM_RASTER_H});
   assert.equal(f.desktop,true);
+  assert.equal(f.scale,4);
   assert.ok(f.cssWidth<=MODEM_DESKTOP_MAX_CSS_WIDTH);
   assert.ok(f.cssHeight<=MODEM_DESKTOP_MAX_CSS_HEIGHT);
 });
