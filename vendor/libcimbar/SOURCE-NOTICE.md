@@ -9,5 +9,6 @@ qcolortrasfer includes the official libcimbar Web/WASM release artifact solely f
 - Artifact SHA-256: `776a8d71c8bc782eda769c4c0b309d805ca13cbd78df0ed0373cfa9ac44ef20e`
 - Upstream source: https://github.com/sz3/libcimbar/tree/v0.6.7c
 - License: Mozilla Public License 2.0 for libcimbar files. See `LICENSE-MPL-2.0.txt`.
+- Extracted-file hashes: `MANIFEST.sha256`.
 
 The surrounding qcolortrasfer adapter and application files remain separately licensed under MIT. No libcimbar source file is relicensed as MIT.
