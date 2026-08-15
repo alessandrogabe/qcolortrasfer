@@ -1,16 +1,18 @@
 // qcolortrasfer OPTICAL MODEM display layout policy (MIT).
 //
 // Phones need to use almost all available screen area because camera pixels per
-// cell are scarce. Desktop/laptop displays are the opposite: blindly filling a
-// 16:9 monitor pushes the four SYNC fiducials very far apart and can force the
-// receiver to move back until individual cells become too small. Desktop mode
-// therefore caps the optical field to a camera-friendly centered rectangle.
+// cell are scarce. Desktop/laptop displays are the opposite: filling the stage
+// pushes the four SYNC fiducials too far apart and may place them close to the
+// browser/control edges. Desktop mode therefore targets a compact ~800x464 CSS
+// optical field (4 CSS px/logical raster cell at DPR 1), centered inside a
+// generous white surround. Backing scale always remains an integer.
 
 export const MODEM_DESKTOP_MIN_WIDTH = 900;
 export const MODEM_DESKTOP_MIN_HEIGHT = 480;
-export const MODEM_DESKTOP_MAX_CSS_WIDTH = 1040;
-export const MODEM_DESKTOP_MAX_CSS_HEIGHT = 680;
-export const MODEM_DESKTOP_MAX_CELL_CSS = 5;
+export const MODEM_DESKTOP_MAX_CSS_WIDTH = 880;
+export const MODEM_DESKTOP_MAX_CSS_HEIGHT = 540;
+export const MODEM_DESKTOP_MAX_CELL_CSS = 4;
+export const MODEM_DESKTOP_VIEWPORT_FRACTION = 0.82;
 
 function finitePositive(value, fallback = 1) {
   const n = Number(value);
@@ -39,10 +41,13 @@ function orientationCandidate({ width, height, dpr, rasterWidth, rasterHeight, r
   let scaleCap = Infinity;
 
   if (desktop) {
-    // Keep a white surround inside the stage and limit absolute marker
-    // separation. The backing raster remains integer-scaled for crisp cells.
-    budgetW = Math.min(width * 0.92, MODEM_DESKTOP_MAX_CSS_WIDTH);
-    budgetH = Math.min(height * 0.94, MODEM_DESKTOP_MAX_CSS_HEIGHT);
+    // A monitor is viewed by a camera from farther away than a phone display.
+    // Keeping the modem compact lets all four outer SYNC markers stay visible
+    // without forcing the receiver so far back that each color cell becomes
+    // sub-pixel. The white stage around the canvas is part of the optical safe
+    // area and must not be consumed by the raster.
+    budgetW = Math.min(width * MODEM_DESKTOP_VIEWPORT_FRACTION, MODEM_DESKTOP_MAX_CSS_WIDTH);
+    budgetH = Math.min(height * MODEM_DESKTOP_VIEWPORT_FRACTION, MODEM_DESKTOP_MAX_CSS_HEIGHT);
     scaleCap = Math.max(1, Math.floor(MODEM_DESKTOP_MAX_CELL_CSS * dpr));
   }
 
@@ -73,8 +78,8 @@ export function computeModemDisplayLayout(args) {
   const landscape = orientationCandidate({ ...n, rotated: false, desktop });
   const portrait = orientationCandidate({ ...n, rotated: true, desktop });
 
-  // Primary objective is module size (scale). If tied, use the orientation that
-  // occupies more of the available optical area; final tie follows viewport.
+  // Primary objective is module size. If tied, use the orientation that leaves
+  // the largest valid optical raster; final tie follows viewport orientation.
   let chosen;
   if (portrait.scale !== landscape.scale) chosen = portrait.scale > landscape.scale ? portrait : landscape;
   else if (Math.abs(portrait.fill - landscape.fill) > 1e-6) chosen = portrait.fill > landscape.fill ? portrait : landscape;
