@@ -1,4 +1,4 @@
-import { createModemRaster } from './optical-modem-codec.js';
+import { createRsModemRaster } from './optical-modem-rs-codec.js';
 
 function rotateClockwise(raster){
   const w=raster.width,h=raster.height,out=new Uint8ClampedArray(w*h*4),nw=h,nh=w;
@@ -13,7 +13,7 @@ self.onmessage=event=>{
   const d=event.data||{};
   try{
     const packet=new Uint8Array(d.packet);
-    let raster=createModemRaster(packet,{streamId:d.streamId>>>0,symbolId:d.symbolId>>>0});
+    let raster=createRsModemRaster(packet,{streamId:d.streamId>>>0,symbolId:d.symbolId>>>0});
     if(d.portrait)raster=rotateClockwise(raster);
     self.postMessage({id:d.id,generation:d.generation,symbolId:d.symbolId,raster:{...raster,pixels:raster.pixels.buffer}},[raster.pixels.buffer]);
   }catch(error){self.postMessage({id:d.id,generation:d.generation,error:error?.message||String(error)});}
