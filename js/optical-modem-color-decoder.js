@@ -11,6 +11,7 @@ import {
   MODEM_GRID_W, MODEM_GRID_H, MODEM_PAYLOAD_CELLS, MODEM_CHUNK_BYTES,
   homographyFromPoints, mapHomography, modemPayloadPositions, modemStatesToPacket
 } from './optical-modem-codec.js';
+import { repairModemPacketWithCrc } from './optical-modem-crc-repair.js';
 
 const SOURCE=Object.freeze([
   Object.freeze({x:5.5,y:5.5}),Object.freeze({x:MODEM_GRID_W-5.5,y:5.5}),
@@ -67,8 +68,6 @@ function findPilotResiduals(image,h){
     const zero=pilotScore(image,h,cx,cy,0,0);let best=zero?{...zero,dx:0,dy:0,rank:zero.score}:null;
     for(const sy of PILOT_SHIFTS)for(const sx of PILOT_SHIFTS){if(sx===0&&sy===0)continue;const s=pilotScore(image,h,cx,cy,sx,sy);if(!s)continue;const rank=s.score-.12*Math.hypot(sx,sy);if(!best||rank>best.rank)best={...s,dx:sx,dy:sy,rank};}
     if(!best||best.accuracy<.76)continue;
-    // Do not apply a local correction merely because a neighbouring sample is
-    // fractionally better. At 2-3 camera px/cell, a false 1 px residual is huge.
     const improves=!zero||best.score>zero.score+2.0||best.accuracy>zero.accuracy+.04;
     if(improves&&Math.hypot(best.dx,best.dy)>=.25)anchors.push({mx:cx+.5,my:cy+.5,dx:best.dx,dy:best.dy,accuracy:best.accuracy,separation:best.separation});
   }
@@ -110,28 +109,30 @@ function regionalCentroids(image,h,phase,anchors,cal){
 }
 
 function classifyField(image,h,phase,anchors,cal,regions=null){
-  const states=new Uint8Array(MODEM_PAYLOAD_CELLS),rgb=[0,0,0],f=[0,0,0,0],corr=[0,0];let marginSum=0,resampled=0;
-  for(let i=0;i<PAYLOAD.length;i++){const p=PAYLOAD[i];if(!sampleCell(image,h,p.x,p.y,phase,anchors,false,rgb,corr))return null;feature(rgb,f);const c=regions?regions[regionIndex(p.x,p.y)]:cal.centroids;let q=classify(f,c);if(q.margin<.0012&&sampleCell(image,h,p.x,p.y,phase,anchors,true,rgb,corr)){feature(rgb,f);q=classify(f,c);resampled++;}states[i]=q.state;marginSum+=q.margin;}
-  return{states,margin:marginSum/PAYLOAD.length,resampled};
+  const states=new Uint8Array(MODEM_PAYLOAD_CELLS),confidence=new Float32Array(MODEM_PAYLOAD_CELLS),rgb=[0,0,0],f=[0,0,0,0],corr=[0,0];let marginSum=0,resampled=0;
+  for(let i=0;i<PAYLOAD.length;i++){const p=PAYLOAD[i];if(!sampleCell(image,h,p.x,p.y,phase,anchors,false,rgb,corr))return null;feature(rgb,f);const c=regions?regions[regionIndex(p.x,p.y)]:cal.centroids;let q=classify(f,c);if(q.margin<.0012&&sampleCell(image,h,p.x,p.y,phase,anchors,true,rgb,corr)){feature(rgb,f);q=classify(f,c);resampled++;}states[i]=q.state;confidence[i]=q.margin;marginSum+=q.margin;}
+  return{states,confidence,margin:marginSum/PAYLOAD.length,resampled};
 }
-function packetFromField(field){let fec;try{fec=modemStatesToPacket(field.states);const packet=decodeOpticalPacket(fec.bytes);if(packet.protocolVersion!==2||packet.chunkSize!==MODEM_CHUNK_BYTES||packet.visualStates!==4)return{ok:false,error:'protocol',corrected:fec.corrected};return{ok:true,fec,packet};}catch(error){return{ok:false,error:error?.message||String(error),corrected:Number(fec?.corrected)||0};}}
+function packetFromField(field){
+  let fec;try{fec=modemStatesToPacket(field.states);const packet=decodeOpticalPacket(fec.bytes);if(packet.protocolVersion===2&&packet.chunkSize===MODEM_CHUNK_BYTES&&packet.visualStates===4)return{ok:true,fec,packet,listWords:0,listTrials:0};}catch{}
+  if(!fec)try{fec=modemStatesToPacket(field.states);}catch(error){return{ok:false,error:error?.message||String(error),corrected:0};}
+  const repaired=repairModemPacketWithCrc(field.states,field.confidence,fec.bytes);if(repaired?.packet&&repaired.packet.protocolVersion===2&&repaired.packet.chunkSize===MODEM_CHUNK_BYTES&&repaired.packet.visualStates===4)return{ok:true,fec:{...fec,bytes:repaired.bytes},packet:repaired.packet,listWords:repaired.listWords,listTrials:repaired.listTrials,suspectCount:repaired.suspectCount};
+  return{ok:false,error:'CRC mismatch',corrected:Number(fec.corrected)||0,listWords:0,listTrials:Number(repaired?.listTrials)||0,suspectCount:Number(repaired?.suspectCount)||0};
+}
 
 function diagnostic(started,stage,extra={}){return{ok:false,stage,decodeMs:(globalThis.performance?.now?.()??Date.now())-started,...extra};}
+function success(started,tracked,decoded,field,cal,anchors,phase,control,adaptation){return{ok:true,stage:'decoded',packet:decoded.packet,bytes:decoded.fec.bytes,corrected:decoded.fec.corrected,listWords:decoded.listWords||0,listTrials:decoded.listTrials||0,suspectCount:decoded.suspectCount||0,markers:tracked.markers.map(m=>({...m})),rotation:Number(tracked.rotation)||0,anchorSet:tracked.anchorSet||'outer',calibrationSeparation:cal.separation,margin:field.margin,resampled:field.resampled,pilotAnchors:anchors.length,phaseAccuracy:phase.accuracy,phaseSeparation:phase.separation,controlAccuracy:control?.accuracy||0,adaptation,decodeMs:(globalThis.performance?.now?.()??Date.now())-started};}
 
 export async function decodeOpticalModemColor(image,tracked){
   const started=globalThis.performance?.now?.()??Date.now();if(!image?.data||!tracked?.markers?.length)return diagnostic(started,'geometry');const h=buildHomography(tracked);if(!h)return diagnostic(started,'geometry');
 
-  // 1) Stable projective geometry: no local residual correction.
   let anchors=[],phase=findPhase(image,h,anchors),control=decodeControlKnown(image,h,phase,anchors),cal=calibrate(image,h,phase,anchors);
   if(!cal)return diagnostic(started,'calibration',{pilotAnchors:0,phaseAccuracy:phase.accuracy,controlAccuracy:control?.accuracy||0});
-  let field=classifyField(image,h,phase,anchors,cal),decoded=field&&packetFromField(field);
-  if(decoded?.ok)return{ok:true,stage:'decoded',packet:decoded.packet,bytes:decoded.fec.bytes,corrected:decoded.fec.corrected,markers:tracked.markers.map(m=>({...m})),rotation:Number(tracked.rotation)||0,anchorSet:tracked.anchorSet||'outer',calibrationSeparation:cal.separation,margin:field.margin,resampled:field.resampled,pilotAnchors:0,phaseAccuracy:phase.accuracy,phaseSeparation:phase.separation,controlAccuracy:control?.accuracy||0,adaptation:'global',decodeMs:(globalThis.performance?.now?.()??Date.now())-started};
+  let field=classifyField(image,h,phase,anchors,cal),decoded=field&&packetFromField(field);if(decoded?.ok)return success(started,tracked,decoded,field,cal,anchors,phase,control,'global');
 
-  // 2) Only if CRC failed, allow B/W pilots to add local geometric residuals.
-  anchors=findPilotResiduals(image,h);if(anchors.length){phase=findPhase(image,h,anchors);control=decodeControlKnown(image,h,phase,anchors);const correctedCal=calibrate(image,h,phase,anchors);if(correctedCal){cal=correctedCal;field=classifyField(image,h,phase,anchors,cal);decoded=field&&packetFromField(field);if(decoded?.ok)return{ok:true,stage:'decoded',packet:decoded.packet,bytes:decoded.fec.bytes,corrected:decoded.fec.corrected,markers:tracked.markers.map(m=>({...m})),rotation:Number(tracked.rotation)||0,anchorSet:tracked.anchorSet||'outer',calibrationSeparation:cal.separation,margin:field.margin,resampled:field.resampled,pilotAnchors:anchors.length,phaseAccuracy:phase.accuracy,phaseSeparation:phase.separation,controlAccuracy:control?.accuracy||0,adaptation:'pilot',decodeMs:(globalThis.performance?.now?.()??Date.now())-started};}}
+  anchors=findPilotResiduals(image,h);if(anchors.length){phase=findPhase(image,h,anchors);control=decodeControlKnown(image,h,phase,anchors);const correctedCal=calibrate(image,h,phase,anchors);if(correctedCal){cal=correctedCal;field=classifyField(image,h,phase,anchors,cal);decoded=field&&packetFromField(field);if(decoded?.ok)return success(started,tracked,decoded,field,cal,anchors,phase,control,'pilot');}}
 
-  // 3) Final fallback: slowly adapt color centroids by coarse image region.
-  const regions=regionalCentroids(image,h,phase,anchors,cal);field=classifyField(image,h,phase,anchors,cal,regions);decoded=field&&packetFromField(field);if(decoded?.ok)return{ok:true,stage:'decoded',packet:decoded.packet,bytes:decoded.fec.bytes,corrected:decoded.fec.corrected,markers:tracked.markers.map(m=>({...m})),rotation:Number(tracked.rotation)||0,anchorSet:tracked.anchorSet||'outer',calibrationSeparation:cal.separation,margin:field.margin,resampled:field.resampled,pilotAnchors:anchors.length,phaseAccuracy:phase.accuracy,phaseSeparation:phase.separation,controlAccuracy:control?.accuracy||0,adaptation:'regional',decodeMs:(globalThis.performance?.now?.()??Date.now())-started};
+  const regions=regionalCentroids(image,h,phase,anchors,cal);field=classifyField(image,h,phase,anchors,cal,regions);decoded=field&&packetFromField(field);if(decoded?.ok)return success(started,tracked,decoded,field,cal,anchors,phase,control,'regional');
 
-  return diagnostic(started,'fec/crc',{pilotAnchors:anchors.length,phaseAccuracy:phase.accuracy,phaseSeparation:phase.separation,controlAccuracy:control?.accuracy||0,calibrationSeparation:cal.separation,margin:field?.margin||0,resampled:field?.resampled||0,corrected:decoded?.corrected||0,error:decoded?.error||'CRC mismatch',adaptation:'failed'});
+  return diagnostic(started,'fec/crc',{pilotAnchors:anchors.length,phaseAccuracy:phase.accuracy,phaseSeparation:phase.separation,controlAccuracy:control?.accuracy||0,calibrationSeparation:cal.separation,margin:field?.margin||0,resampled:field?.resampled||0,corrected:decoded?.corrected||0,listTrials:decoded?.listTrials||0,suspectCount:decoded?.suspectCount||0,error:decoded?.error||'CRC mismatch',adaptation:'failed'});
 }
