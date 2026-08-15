@@ -1,8 +1,10 @@
-// qcolortrasfer OPTICAL MODEM RS on-air codec v3.3 (MIT).
+// qcolortrasfer OPTICAL MODEM RS on-air codec v3.3.1 (MIT).
 //
-// Version 2 of the standalone modem replaces short binary Hamming words with
-// byte-symbol RS(255,223). 18 codewords are byte-interleaved across the 192x108
-// field so local optical errors are spread among independent RS blocks.
+// Version 3 of the standalone modem uses byte-symbol RS(255,191). Eighteen
+// codewords are byte-interleaved across the 192x108 field so local optical
+// errors are spread among independent RS blocks. The lower code rate trades
+// some payload for twice the byte-error correction radius of v3.3 while still
+// offering ~200 KiB/s fountain capacity at 60 fps.
 
 import { encodeOpticalPacketV2 } from './protocol.js';
 import {
@@ -11,10 +13,10 @@ import {
 } from './optical-modem-codec.js';
 import { RS_DATA_BYTES,RS_CODE_BYTES,rsEncodeInterleaved,rsDecodeInterleaved } from './optical-modem-rs.js';
 
-export const MODEM_RS_VERSION=2;
-export const MODEM_RS_PACKET_BYTES=RS_DATA_BYTES;          // 4014
+export const MODEM_RS_VERSION=3;
+export const MODEM_RS_PACKET_BYTES=RS_DATA_BYTES;          // 3438
 export const MODEM_RS_QCT_OVERHEAD=28;
-export const MODEM_RS_CHUNK_BYTES=MODEM_RS_PACKET_BYTES-MODEM_RS_QCT_OVERHEAD; // 3986
+export const MODEM_RS_CHUNK_BYTES=MODEM_RS_PACKET_BYTES-MODEM_RS_QCT_OVERHEAD; // 3410
 export const MODEM_RS_CODE_BYTES=RS_CODE_BYTES;            // 4590
 export const MODEM_RS_CODE_BITS=MODEM_RS_CODE_BYTES*8;
 export const MODEM_RS_CODE_CELLS=MODEM_RS_CODE_BYTES*4;    // 18360
@@ -67,5 +69,5 @@ export function createRsModemRaster(packet,{streamId=0,symbolId=0}={}){
   for(const y of [8,9])for(let x=64;x<128;x++)paintLogical(pixels,x,y,syncBit(x-64)?BLACK:WHITE);for(const[cx,cy]of PILOTS)paintPilot(pixels,cx,cy);
   const control=controlBytes(streamId,symbolId);for(let copy=0;copy<2;copy++)for(let i=0;i<64;i++)paintLogical(pixels,32+i,100+copy,bitAt(control,i)?BLACK:WHITE);
   for(let i=0;i<PAYLOAD.length;i++)paintLogical(pixels,PAYLOAD[i].x,PAYLOAD[i].y,i<MODEM_RS_CODE_CELLS?MODEM_PALETTE[states[i]&3]:NEUTRAL);
-  return{pixels,width:MODEM_RASTER_W,height:MODEM_RASTER_H,gridWidth:MODEM_GRID_W,gridHeight:MODEM_GRID_H,states:MODEM_STATES,fec:'RS255/223'};
+  return{pixels,width:MODEM_RASTER_W,height:MODEM_RASTER_H,gridWidth:MODEM_GRID_W,gridHeight:MODEM_GRID_H,states:MODEM_STATES,fec:'RS255/191'};
 }
