@@ -8,7 +8,8 @@
 // qcolortrasfer-v3.0.0-dual-main-color-fast-rx
 // qcolortrasfer-v3.1.0-main-color-valid-luma
 // qcolortrasfer-v3.2.0-optical-modem
-const CACHE = 'qcolortrasfer-v3.2.1-real-sync-detector';
+// qcolortrasfer-v3.2.1-real-sync-detector
+const CACHE = 'qcolortrasfer-v3.2.2-subpixel-modem-desktop';
 
 const CORE = [
   './', './index.html', './styles.css', './tx-flow.css', './manifest.webmanifest',
@@ -17,7 +18,8 @@ const CORE = [
   './js/rx-performance-policy.js', './js/rx-detection-overlay.js', './js/rx-chroma-worker-bridge.js',
   './js/tx-profile-policy.js', './js/tx-aux-repair-v2.js', './js/tx-chroma-fountain.js', './js/tx-dual-main-color.js',
   './js/chroma-fountain.js', './js/chroma-fast-decoder.js', './js/chroma-tx-worker.js', './js/chroma/qr-worker.js',
-  './js/optical-modem-codec.js', './js/optical-modem-detector.js', './js/optical-modem-tx-worker.js', './js/optical-modem-tx.js', './js/optical-modem-worker.js', './js/optical-modem-rx.js',
+  './js/optical-modem-codec.js', './js/optical-modem-detector.js', './js/optical-modem-layout.js', './js/optical-modem-color-decoder.js',
+  './js/optical-modem-tx-worker.js', './js/optical-modem-tx.js', './js/optical-modem-worker.js', './js/optical-modem-rx.js',
   './js/app.js', './js/crc32.js', './js/fountain.js', './js/protocol.js', './js/aux-repair.js', './js/optical.js',
   './js/color-code.js', './js/adaptive-scheduler.js', './js/high-throughput.js', './js/tx-worker.js',
   './js/rx-roi.js', './js/tracked-qr.js', './js/tracked-phase.js', './js/qr-worker.js'
