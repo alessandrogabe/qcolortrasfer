@@ -1,17 +1,19 @@
 // qcolortrasfer OPTICAL MODEM Reed-Solomon FEC (MIT).
 //
-// Original implementation of systematic RS(255,223) over GF(256), primitive
-// polynomial x^8+x^4+x^3+x^2+1 (0x11d). Each codeword has 32 parity bytes and
-// corrects up to 16 arbitrary byte-symbol errors. Decoder uses Berlekamp-Massey
-// for the locator, Chien search for positions and a small GF Vandermonde solve
-// for magnitudes. No third-party source is incorporated.
+// Original implementation of systematic RS(255,191) over GF(256), primitive
+// polynomial x^8+x^4+x^3+x^2+1 (0x11d). Each codeword has 64 parity bytes and
+// corrects up to 32 arbitrary byte-symbol errors. Eighteen codewords are
+// interleaved across the optical field so local display/camera errors are spread
+// across independent RS blocks. Decoder uses Berlekamp-Massey for the locator,
+// Chien search for positions and a small GF Vandermonde solve for magnitudes.
+// No third-party source is incorporated.
 
 export const RS_N=255;
-export const RS_K=223;
+export const RS_K=191;
 export const RS_PARITY=RS_N-RS_K;
 export const RS_T=RS_PARITY/2;
 export const RS_BLOCKS=18;
-export const RS_DATA_BYTES=RS_K*RS_BLOCKS;      // 4014
+export const RS_DATA_BYTES=RS_K*RS_BLOCKS;      // 3438
 export const RS_CODE_BYTES=RS_N*RS_BLOCKS;      // 4590
 
 const EXP=new Uint16Array(512),LOG=new Int16Array(256);LOG.fill(-1);
@@ -70,7 +72,7 @@ function solveVandermonde(powers,synd){
 export function rsDecodeBlock(code){
   if(!(code instanceof Uint8Array)||code.length!==RS_N)throw new Error(`RS code block must be ${RS_N} bytes`);const out=code.slice(),synd=syndromes(out);if(!anyNonZero(synd))return{data:out.slice(0,RS_K),corrected:0};
   const{locator,degree}=berlekampMassey(synd);if(!degree||degree>RS_T)throw new Error(`RS uncorrectable locator degree ${degree}`);
-  const found=findErrorPositions(locator,degree,RS_N);if(!found)throw new Error('RS error position search failed');const magnitudes=solveVandermonde(found.powers,synd);if(!magnitudes)throw new Error('RS magnitude solve failed');
+  const found=findErrorPositions(locator,degree,RS_N);if(!found)throw new Error(`RS error position search failed (locator degree ${degree})`);const magnitudes=solveVandermonde(found.powers,synd);if(!magnitudes)throw new Error('RS magnitude solve failed');
   for(let i=0;i<found.positions.length;i++)out[found.positions[i]]^=magnitudes[i];if(anyNonZero(syndromes(out)))throw new Error('RS residual syndrome after correction');
   return{data:out.slice(0,RS_K),corrected:found.positions.length};
 }
@@ -83,5 +85,5 @@ export function rsEncodeInterleaved(data){
 export function rsDecodeInterleaved(code){
   if(!(code instanceof Uint8Array)||code.length<RS_CODE_BYTES)throw new Error(`RS modem code must contain ${RS_CODE_BYTES} bytes`);const blocks=Array.from({length:RS_BLOCKS},()=>new Uint8Array(RS_N));let p=0;
   for(let column=0;column<RS_N;column++)for(let b=0;b<RS_BLOCKS;b++)blocks[b][column]=code[p++];
-  const data=new Uint8Array(RS_DATA_BYTES);let corrected=0;for(let b=0;b<RS_BLOCKS;b++){const d=rsDecodeBlock(blocks[b]);data.set(d.data,b*RS_K);corrected+=d.corrected;}return{data,corrected};
+  const data=new Uint8Array(RS_DATA_BYTES);let corrected=0;for(let b=0;b<RS_BLOCKS;b++){let d;try{d=rsDecodeBlock(blocks[b]);}catch(error){throw new Error(`RS block ${b}: ${error?.message||error}`);}data.set(d.data,b*RS_K);corrected+=d.corrected;}return{data,corrected};
 }
