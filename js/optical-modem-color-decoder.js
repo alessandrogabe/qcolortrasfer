@@ -70,7 +70,7 @@ function phaseScore(image,h,anchors,px,py){
   const add=(mx,my,darkExpected)=>{const p=projected(image,h,mx+px,my+py,anchors,corr);if(!p)return;const l=lumaBilinear(image,p.x,p.y);if(l==null)return;samples.push([l,darkExpected]);if(darkExpected){dark+=l;dn++;}else{light+=l;ln++;}};
   for(let x=15;x<MODEM_GRID_W-15;x+=3){add(x+.5,13.5,timingExpected('x',x,false));add(x+.5,MODEM_GRID_H-13.5,timingExpected('x',x,true));}
   for(let y=15;y<MODEM_GRID_H-15;y+=3){add(13.5,y+.5,timingExpected('y',y,false));add(MODEM_GRID_W-13.5,y+.5,timingExpected('y',y,true));}
-  if(dn<25||ln<25)return null;const dm=dark/dn,lm=light/ln,sep=lm-dm;if(sep<10)return null,t=(dm+lm)/2;let correct=0;for(const[v,d]of samples)if((v<t)===d)correct++;return{accuracy:correct/samples.length,separation:sep,score:correct/samples.length*100+Math.min(18,sep/7)};
+  if(dn<25||ln<25)return null;const dm=dark/dn,lm=light/ln,sep=lm-dm;if(sep<10)return null;const t=(dm+lm)/2;let correct=0;for(const[v,d]of samples)if((v<t)===d)correct++;return{accuracy:correct/samples.length,separation:sep,score:correct/samples.length*100+Math.min(18,sep/7)};
 }
 function findPhase(image,h,anchors){let best={x:0,y:0,accuracy:0,separation:0,score:-1};for(const y of PHASE_STEPS)for(const x of PHASE_STEPS){const s=phaseScore(image,h,anchors,x,y);if(s&&s.score>best.score)best={x,y,...s};}return best;}
 
@@ -89,7 +89,6 @@ function calibrateSeeds(image,h,phase,anchors){
 function regionIndex(x,y){return Math.min(REGION_COLS-1,Math.floor(x*REGION_COLS/MODEM_GRID_W))+REGION_COLS*Math.min(REGION_ROWS-1,Math.floor(y*REGION_ROWS/MODEM_GRID_H));}
 function buildRegionalCentroids(image,h,phase,anchors,seeds){
   const regions=REGION_COLS*REGION_ROWS,sums=new Float64Array(regions*16),counts=new Uint16Array(regions*4),rgb=[0,0,0],f=[0,0,0,0],corr=[0,0];
-  // Seed every region with a small prior from the known calibration patches.
   for(let r=0;r<regions;r++)for(let s=0;s<4;s++){const ro=r*16+s*4,so=s*4;for(let k=0;k<4;k++)sums[ro+k]=seeds.centroids[so+k]*6;counts[r*4+s]=6;}
   for(let i=0;i<PAYLOAD.length;i+=31){const p=PAYLOAD[i];if(!sampleCell(image,h,p.x,p.y,phase,anchors,false,rgb,corr))continue;feature(rgb,f);const c=classify(f,seeds.centroids);if(c.margin<.0007)continue;const r=regionIndex(p.x,p.y),o=r*16+c.state*4;for(let k=0;k<4;k++)sums[o+k]+=f[k];counts[r*4+c.state]++;}
   const out=[];for(let r=0;r<regions;r++){const c=new Float64Array(16);for(let s=0;s<4;s++){const o=s*4,ro=r*16+o,n=Math.max(1,counts[r*4+s]);for(let k=0;k<4;k++)c[o+k]=sums[ro+k]/n;}out.push(c);}return out;
