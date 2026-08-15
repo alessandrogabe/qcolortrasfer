@@ -42,6 +42,22 @@ test('qcolor adapter uses the exact same-origin libcimbar pages and native APIs'
   assert.doesNotMatch(adapter, /https:\/\/re\.cimbar\.org/);
 });
 
+test('qcolor republishes libcimbar completed Blob as a top-level downloadable file', async () => {
+  const bridge = await text('js/cimbar-download-bridge.js');
+  const shell = await text('js/ui-shell.js');
+  const sw = await text('sw.js');
+  assert.match(shell, /import '\.\/cimbar-download-bridge\.js'/);
+  assert.match(bridge, /Zstd\.download_blob|download_blob/);
+  assert.match(bridge, /new Blob\(\[blob\]/);
+  assert.match(bridge, /URL\.createObjectURL\(parentBlob\)/);
+  assert.match(bridge, /link\.download = currentName/);
+  assert.match(bridge, /link\.hidden = false/);
+  assert.match(bridge, /cimbarDownloadButton/);
+  assert.match(bridge, /return original\(name, blob\)/);
+  assert.match(sw, /qcolortrasfer-v3\.4\.1-libcimbar-download-bridge/);
+  assert.match(sw, /cimbar-download-bridge\.js/);
+});
+
 test('MPL source and exact release provenance are shipped with the runtime', async () => {
   const notice = await text('vendor/libcimbar/SOURCE-NOTICE.md');
   const license = await text('vendor/libcimbar/LICENSE-MPL-2.0.txt');
