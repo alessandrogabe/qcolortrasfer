@@ -24,7 +24,6 @@ function cameraResample(raster,{sx=2.45,sy=2.35,shiftX=.37,shiftY=.61}={}){
   for(let y=0;y<height;y++)for(let x=0;x<width;x++){
     const srcX=((x+.5-shiftX)/sx)-.5,srcY=((y+.5-shiftY)/sy)-.5,o=(y*width+x)*4;
     if(srcX<0||srcY<0||srcX>=raster.width||srcY>=raster.height){data[o]=data[o+1]=data[o+2]=255;data[o+3]=255;continue;}
-    // Mild camera white-balance/channel-gain distortion on top of fractional resampling.
     const r=bilinear(raster.pixels,raster.width,raster.height,srcX,srcY,0),g=bilinear(raster.pixels,raster.width,raster.height,srcX,srcY,1),b=bilinear(raster.pixels,raster.width,raster.height,srcX,srcY,2);
     data[o]=Math.max(0,Math.min(255,r*.90+8));data[o+1]=Math.max(0,Math.min(255,g*1.04+3));data[o+2]=Math.max(0,Math.min(255,b*.96+5));data[o+3]=255;
   }
@@ -36,7 +35,7 @@ function cameraResample(raster,{sx=2.45,sy=2.35,shiftX=.37,shiftY=.61}={}){
 test('real-camera decoder survives fractional 2-3 pixel cells and white-balance shift',async()=>{
   const{packet}=samplePacket(31),raster=createModemRaster(packet,{streamId:0x2468ace0,symbolId:31}),{image,tracked}=cameraResample(raster);
   const result=await decodeOpticalModemColor(image,tracked);
-  assert.equal(result.ok,true,`stage=${result.stage} cal=${result.calibrationSeparation} phase=${result.phaseAccuracy} control=${result.controlAccuracy} err=${result.error||''}`);
+  assert.equal(result.ok,true,`stage=${result.stage} cal=${result.calibrationSeparation} phase=${result.phaseAccuracy} control=${result.controlAccuracy} pilots=${result.pilotAnchors} corrected=${result.corrected} margin=${result.margin} resample=${result.resampled} adaptation=${result.adaptation} decodeMs=${result.decodeMs} err=${result.error||''}`);
   assert.equal(result.packet.symbolId,31);
   assert.equal(result.packet.chunkSize,MODEM_CHUNK_BYTES);
   assert.ok(result.calibrationSeparation>.05);
