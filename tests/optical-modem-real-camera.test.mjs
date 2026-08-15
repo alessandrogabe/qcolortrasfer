@@ -35,7 +35,7 @@ function cameraResample(raster,{sx=2.45,sy=2.35,shiftX=.37,shiftY=.61}={}){
 test('real-camera decoder survives fractional 2-3 pixel cells and white-balance shift',async()=>{
   const{packet}=samplePacket(31),raster=createModemRaster(packet,{streamId:0x2468ace0,symbolId:31}),{image,tracked}=cameraResample(raster);
   const result=await decodeOpticalModemColor(image,tracked);
-  assert.equal(result.ok,true,`stage=${result.stage} cal=${result.calibrationSeparation} phase=${result.phaseAccuracy} control=${result.controlAccuracy} pilots=${result.pilotAnchors} corrected=${result.corrected} margin=${result.margin} resample=${result.resampled} adaptation=${result.adaptation} decodeMs=${result.decodeMs} err=${result.error||''}`);
+  assert.equal(result.ok,true,`stage=${result.stage} cal=${result.calibrationSeparation} phase=${result.phaseAccuracy} control=${result.controlAccuracy} pilots=${result.pilotAnchors} corrected=${result.corrected} suspects=${result.suspectCount} listTrials=${result.listTrials} margin=${result.margin} resample=${result.resampled} adaptation=${result.adaptation} decodeMs=${result.decodeMs} err=${result.error||''}`);
   assert.equal(result.packet.symbolId,31);
   assert.equal(result.packet.chunkSize,MODEM_CHUNK_BYTES);
   assert.ok(result.calibrationSeparation>.05);
