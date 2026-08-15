@@ -7,7 +7,8 @@
 // qcolortrasfer-v2.9.0-chroma-fountain
 // qcolortrasfer-v3.0.0-dual-main-color-fast-rx
 // qcolortrasfer-v3.1.0-main-color-valid-luma
-const CACHE = 'qcolortrasfer-v3.2.0-optical-modem';
+// qcolortrasfer-v3.2.0-optical-modem
+const CACHE = 'qcolortrasfer-v3.2.1-real-sync-detector';
 
 const CORE = [
   './', './index.html', './styles.css', './tx-flow.css', './manifest.webmanifest',
