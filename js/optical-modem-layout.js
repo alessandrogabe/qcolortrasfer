@@ -21,6 +21,16 @@ export function isDesktopModemViewport(width, height) {
   return finitePositive(width) >= MODEM_DESKTOP_MIN_WIDTH && finitePositive(height) >= MODEM_DESKTOP_MIN_HEIGHT;
 }
 
+function normalizedInputs({ width, height, dpr = 1, rasterWidth, rasterHeight }) {
+  return {
+    width: finitePositive(width),
+    height: finitePositive(height),
+    dpr: Math.max(1, finitePositive(dpr)),
+    rasterWidth: Math.max(1, Math.floor(finitePositive(rasterWidth))),
+    rasterHeight: Math.max(1, Math.floor(finitePositive(rasterHeight))),
+  };
+}
+
 function orientationCandidate({ width, height, dpr, rasterWidth, rasterHeight, rotated, desktop }) {
   const rw = rotated ? rasterHeight : rasterWidth;
   const rh = rotated ? rasterWidth : rasterHeight;
@@ -29,7 +39,7 @@ function orientationCandidate({ width, height, dpr, rasterWidth, rasterHeight, r
   let scaleCap = Infinity;
 
   if (desktop) {
-    // Keep a little white surround inside the stage and limit absolute marker
+    // Keep a white surround inside the stage and limit absolute marker
     // separation. The backing raster remains integer-scaled for crisp cells.
     budgetW = Math.min(width * 0.92, MODEM_DESKTOP_MAX_CSS_WIDTH);
     budgetH = Math.min(height * 0.94, MODEM_DESKTOP_MAX_CSS_HEIGHT);
@@ -44,31 +54,39 @@ function orientationCandidate({ width, height, dpr, rasterWidth, rasterHeight, r
   return { rotated, scale, cssWidth, cssHeight, rasterWidth: rw, rasterHeight: rh, fill };
 }
 
-export function computeModemDisplayLayout({ width, height, dpr = 1, rasterWidth, rasterHeight }) {
-  width = finitePositive(width);
-  height = finitePositive(height);
-  dpr = Math.max(1, finitePositive(dpr));
-  rasterWidth = Math.max(1, Math.floor(finitePositive(rasterWidth)));
-  rasterHeight = Math.max(1, Math.floor(finitePositive(rasterHeight)));
-  const desktop = isDesktopModemViewport(width, height);
+export function fitModemRaster(args) {
+  const n = normalizedInputs(args);
+  const desktop = isDesktopModemViewport(n.width, n.height);
+  const fitted = orientationCandidate({ ...n, rotated: false, desktop });
+  return {
+    ...fitted,
+    desktop,
+    viewportWidth: n.width,
+    viewportHeight: n.height,
+    dpr: n.dpr,
+  };
+}
 
-  const landscape = orientationCandidate({ width, height, dpr, rasterWidth, rasterHeight, rotated: false, desktop });
-  const portrait = orientationCandidate({ width, height, dpr, rasterWidth, rasterHeight, rotated: true, desktop });
+export function computeModemDisplayLayout(args) {
+  const n = normalizedInputs(args);
+  const desktop = isDesktopModemViewport(n.width, n.height);
+  const landscape = orientationCandidate({ ...n, rotated: false, desktop });
+  const portrait = orientationCandidate({ ...n, rotated: true, desktop });
 
   // Primary objective is module size (scale). If tied, use the orientation that
   // occupies more of the available optical area; final tie follows viewport.
   let chosen;
   if (portrait.scale !== landscape.scale) chosen = portrait.scale > landscape.scale ? portrait : landscape;
   else if (Math.abs(portrait.fill - landscape.fill) > 1e-6) chosen = portrait.fill > landscape.fill ? portrait : landscape;
-  else chosen = height > width ? portrait : landscape;
+  else chosen = n.height > n.width ? portrait : landscape;
 
   return {
     ...chosen,
     desktop,
-    viewportWidth: width,
-    viewportHeight: height,
-    dpr,
-    maxCssWidth: desktop ? MODEM_DESKTOP_MAX_CSS_WIDTH : width,
-    maxCssHeight: desktop ? MODEM_DESKTOP_MAX_CSS_HEIGHT : height,
+    viewportWidth: n.width,
+    viewportHeight: n.height,
+    dpr: n.dpr,
+    maxCssWidth: desktop ? MODEM_DESKTOP_MAX_CSS_WIDTH : n.width,
+    maxCssHeight: desktop ? MODEM_DESKTOP_MAX_CSS_HEIGHT : n.height,
   };
 }
