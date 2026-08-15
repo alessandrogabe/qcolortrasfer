@@ -1,10 +1,11 @@
-// qcolortrasfer OPTICAL MODEM real-camera color decoder v3.3 (MIT).
+// qcolortrasfer OPTICAL MODEM real-camera color decoder v3.3.1 (MIT).
 //
 // Geometry and color are decoded independently of QR/ZXing. Sub-pixel bilinear
-// RGB sampling handles 2-3 camera pixels/cell. The first pass deliberately uses
-// only the stable four-SYNC homography, zero-biased timing phase and known color
-// patches. B/W pilot residuals are a geometry fallback. RS(255,223) then repairs
-// byte-symbol errors produced by wrong four-state cells before QCT2 CRC.
+// RGB sampling handles 2-3 camera pixels/cell. The fast pass samples one
+// projected point per data cell. If strong RS still cannot recover the frame, a
+// second area-sampled pass averages five sub-cell points to suppress display /
+// camera moire and pixel-phase errors. This keeps clean frames cheap while
+// giving difficult real-camera frames a robust retry before geometry fallback.
 
 import { decodeOpticalPacket } from './protocol.js';
 import { MODEM_GRID_W,MODEM_GRID_H,homographyFromPoints,mapHomography,modemPayloadPositions } from './optical-modem-codec.js';
@@ -21,6 +22,7 @@ const CAL=Object.freeze([
 ]);
 const PAYLOAD=Object.freeze(modemPayloadPositions().slice(0,MODEM_RS_CODE_CELLS));
 const MULTI=Object.freeze([[.5,.5],[.34,.5],[.66,.5],[.5,.34],[.5,.66]]);
+const SINGLE=Object.freeze([[.5,.5]]);
 const PHASE_STEPS=Object.freeze([0,-.09,.09,-.18,.18,-.28,.28]);
 const PILOT_SHIFTS=Object.freeze([0,-.5,.5,-1,1,-2,2,-3,3]);
 
@@ -38,7 +40,7 @@ function classify(f,c){let best=0,bd=Infinity,sd=Infinity;for(let s=0;s<4;s++){c
 function correctionAt(mx,my,anchors,out){if(!anchors?.length){out[0]=out[1]=0;return out;}let sw=.65,sx=0,sy=0;for(const a of anchors){const dx=mx-a.mx,dy=my-a.my,w=1/(1+(dx*dx+dy*dy)/700);sw+=w;sx+=a.dx*w;sy+=a.dy*w;}out[0]=sx/sw;out[1]=sy/sw;return out;}
 function projected(h,mx,my,anchors,corr){const p=mapHomography(h,mx,my);if(!p)return null;correctionAt(mx,my,anchors,corr);return{x:p.x+corr[0],y:p.y+corr[1]};}
 function sampleCell(image,h,x,y,phase,anchors,multi,rgb,corr){
-  const offsets=multi?MULTI:[[.5,.5]];let r=0,g=0,b=0,n=0,tmp=[0,0,0];for(const[ox,oy]of offsets){const p=projected(h,x+ox+phase.x,y+oy+phase.y,anchors,corr);if(!p||!rgbBilinear(image,p.x,p.y,tmp))continue;r+=tmp[0];g+=tmp[1];b+=tmp[2];n++;}if(!n)return false;rgb[0]=r/n;rgb[1]=g/n;rgb[2]=b/n;return true;
+  const offsets=multi?MULTI:SINGLE;let r=0,g=0,b=0,n=0,tmp=[0,0,0];for(const[ox,oy]of offsets){const p=projected(h,x+ox+phase.x,y+oy+phase.y,anchors,corr);if(!p||!rgbBilinear(image,p.x,p.y,tmp))continue;r+=tmp[0];g+=tmp[1];b+=tmp[2];n++;}if(!n)return false;rgb[0]=r/n;rgb[1]=g/n;rgb[2]=b/n;return true;
 }
 
 function pilotExpected(dx,dy){const d=Math.max(Math.abs(dx),Math.abs(dy));return d===2||d===0;}
@@ -52,15 +54,18 @@ function findPhase(image,h,anchors){let best={x:0,y:0,accuracy:0,separation:0,sc
 
 function minSeparation(c){let min=Infinity;for(let a=0;a<4;a++)for(let b=a+1;b<4;b++){const f=[c[a*4],c[a*4+1],c[a*4+2],c[a*4+3]];min=Math.min(min,Math.sqrt(distance(f,c,b)));}return min;}
 function calibrate(image,h,phase,anchors){const sums=new Float64Array(16),counts=new Uint16Array(4),rgb=[0,0,0],f=[0,0,0,0],corr=[0,0];for(const p of CAL)for(let yy=0;yy<4;yy++)for(let xx=0;xx<5;xx++){if(!sampleCell(image,h,p.x+xx,p.y+yy,phase,anchors,true,rgb,corr))continue;feature(rgb,f);const o=p.state*4;for(let k=0;k<4;k++)sums[o+k]+=f[k];counts[p.state]++;}for(let s=0;s<4;s++)if(counts[s]<10)return null;const c=new Float64Array(16);for(let s=0;s<4;s++)for(let k=0;k<4;k++)c[s*4+k]=sums[s*4+k]/counts[s];const separation=minSeparation(c);return separation>=.055?{centroids:c,separation}:null;}
-function classifyField(image,h,phase,anchors,cal){const states=new Uint8Array(MODEM_RS_CODE_CELLS),rgb=[0,0,0],f=[0,0,0,0],corr=[0,0];let margin=0,resampled=0;for(let i=0;i<PAYLOAD.length;i++){const p=PAYLOAD[i];if(!sampleCell(image,h,p.x,p.y,phase,anchors,false,rgb,corr))return null;feature(rgb,f);let q=classify(f,cal.centroids);if(q.margin<.0012&&sampleCell(image,h,p.x,p.y,phase,anchors,true,rgb,corr)){feature(rgb,f);q=classify(f,cal.centroids);resampled++;}states[i]=q.state;margin+=q.margin;}return{states,margin:margin/PAYLOAD.length,resampled};}
+function classifyField(image,h,phase,anchors,cal,{area=false}={}){const states=new Uint8Array(MODEM_RS_CODE_CELLS),rgb=[0,0,0],f=[0,0,0,0],corr=[0,0];let margin=0,resampled=0;for(let i=0;i<PAYLOAD.length;i++){const p=PAYLOAD[i];if(!sampleCell(image,h,p.x,p.y,phase,anchors,area,rgb,corr))return null;feature(rgb,f);let q=classify(f,cal.centroids);if(!area&&q.margin<.0012&&sampleCell(image,h,p.x,p.y,phase,anchors,true,rgb,corr)){feature(rgb,f);q=classify(f,cal.centroids);resampled++;}else if(area)resampled++;states[i]=q.state;margin+=q.margin;}return{states,margin:margin/PAYLOAD.length,resampled,area};}
 function decodeField(field){try{const fec=rsModemStatesToPacket(field.states),packet=decodeOpticalPacket(fec.bytes);if(packet.protocolVersion!==2||packet.chunkSize!==MODEM_RS_CHUNK_BYTES||packet.visualStates!==4)return{ok:false,error:'protocol'};return{ok:true,fec,packet};}catch(error){return{ok:false,error:error?.message||String(error)};}}
 function diag(started,stage,extra={}){return{ok:false,stage,decodeMs:(globalThis.performance?.now?.()??Date.now())-started,...extra};}
 function good(started,tracked,d,field,cal,anchors,phase,control,adaptation){return{ok:true,stage:'decoded',packet:d.packet,bytes:d.fec.bytes,corrected:d.fec.corrected,markers:tracked.markers.map(m=>({...m})),rotation:Number(tracked.rotation)||0,anchorSet:tracked.anchorSet||'outer',calibrationSeparation:cal.separation,margin:field.margin,resampled:field.resampled,pilotAnchors:anchors.length,phaseAccuracy:phase.accuracy,phaseSeparation:phase.separation,controlAccuracy:control?.accuracy||0,adaptation,decodeMs:(globalThis.performance?.now?.()??Date.now())-started};}
 
+function attemptDecode(image,h,phase,anchors,cal,area){const field=classifyField(image,h,phase,anchors,cal,{area});const decoded=field&&decodeField(field);return{field,decoded};}
+
 export async function decodeOpticalModemColor(image,tracked){
   const started=globalThis.performance?.now?.()??Date.now();if(!image?.data||!tracked?.markers?.length)return diag(started,'geometry');const h=buildHomography(tracked);if(!h)return diag(started,'geometry');
   let anchors=[],phase=findPhase(image,h,anchors),control=decodeControlKnown(image,h,phase,anchors),cal=calibrate(image,h,phase,anchors);if(!cal)return diag(started,'calibration',{phaseAccuracy:phase.accuracy,controlAccuracy:control?.accuracy||0,pilotAnchors:0});
-  let field=classifyField(image,h,phase,anchors,cal),decoded=field&&decodeField(field);if(decoded?.ok)return good(started,tracked,decoded,field,cal,anchors,phase,control,'global-rs');
-  anchors=findPilotResiduals(image,h);if(anchors.length){phase=findPhase(image,h,anchors);control=decodeControlKnown(image,h,phase,anchors);const c=calibrate(image,h,phase,anchors);if(c){cal=c;field=classifyField(image,h,phase,anchors,cal);decoded=field&&decodeField(field);if(decoded?.ok)return good(started,tracked,decoded,field,cal,anchors,phase,control,'pilot-rs');}}
+  let trial=attemptDecode(image,h,phase,anchors,cal,false),field=trial.field,decoded=trial.decoded;if(decoded?.ok)return good(started,tracked,decoded,field,cal,anchors,phase,control,'global-fast-rs');
+  trial=attemptDecode(image,h,phase,anchors,cal,true);field=trial.field;decoded=trial.decoded;if(decoded?.ok)return good(started,tracked,decoded,field,cal,anchors,phase,control,'global-area-rs');
+  anchors=findPilotResiduals(image,h);if(anchors.length){phase=findPhase(image,h,anchors);control=decodeControlKnown(image,h,phase,anchors);const c=calibrate(image,h,phase,anchors);if(c){cal=c;trial=attemptDecode(image,h,phase,anchors,cal,false);field=trial.field;decoded=trial.decoded;if(decoded?.ok)return good(started,tracked,decoded,field,cal,anchors,phase,control,'pilot-fast-rs');trial=attemptDecode(image,h,phase,anchors,cal,true);field=trial.field;decoded=trial.decoded;if(decoded?.ok)return good(started,tracked,decoded,field,cal,anchors,phase,control,'pilot-area-rs');}}
   return diag(started,'rs/crc',{pilotAnchors:anchors.length,phaseAccuracy:phase.accuracy,phaseSeparation:phase.separation,controlAccuracy:control?.accuracy||0,calibrationSeparation:cal.separation,margin:field?.margin||0,resampled:field?.resampled||0,error:decoded?.error||'RS/CRC failure'});
 }
