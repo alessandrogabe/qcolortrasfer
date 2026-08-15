@@ -83,10 +83,10 @@ test('standalone production modem engines do not invoke QR or ZXing payload path
   const dependency=/readBarcodes\s*\(|QRCode\.create\s*\(|(?:from|import).*zxing/i;
   for(const source of [codec,detector,rs,rsCodec,color,tx,rx,worker])assert.doesNotMatch(source,dependency);
   assert.doesNotMatch(tx,/encodeAuxRepairPacket/);assert.doesNotMatch(rx,/qr-worker/);
-  assert.match(detector,/TARGET_PLANE_MIN/);assert.match(detector,/detectOuterModemMarkers/);assert.match(rs,/RS_PARITY/);assert.match(rs,/berlekampMassey/);assert.match(rsCodec,/RS255\/223/);assert.match(color,/rgbBilinear/);assert.match(color,/rs\/crc/);assert.match(rx,/stage \$\{lastStage\}/);assert.match(worker,/finder\/sync/);assert.match(worker,/decodeOpticalModemColor/);
+  assert.match(detector,/TARGET_PLANE_MIN/);assert.match(detector,/detectOuterModemMarkers/);assert.match(rs,/RS_PARITY/);assert.match(rs,/berlekampMassey/);assert.match(rsCodec,/RS255\/191/);assert.match(color,/rgbBilinear/);assert.match(color,/global-area-rs/);assert.match(color,/rs\/crc/);assert.match(rx,/stage \$\{lastStage\}/);assert.match(worker,/finder\/sync/);assert.match(worker,/decodeOpticalModemColor/);
 });
 
 test('UI shell and PWA load all standalone RS modem runtime modules',async()=>{
   const ui=await readFile(root('js/ui-shell.js'),'utf8'),sw=await readFile(root('sw.js'),'utf8');assert.match(ui,/optical-modem-tx/);assert.match(ui,/optical-modem-rx/);
-  assert.match(sw,/v3\.3\.0-rs-optical-modem/);for(const name of ['optical-modem-codec','optical-modem-detector','optical-modem-layout','optical-modem-rs','optical-modem-rs-codec','optical-modem-color-decoder','optical-modem-tx-worker','optical-modem-tx','optical-modem-worker','optical-modem-rx'])assert.match(sw,new RegExp(name));
+  assert.match(sw,/v3\.3\.1-area-strong-rs-desktop/);for(const name of ['optical-modem-codec','optical-modem-detector','optical-modem-layout','optical-modem-rs','optical-modem-rs-codec','optical-modem-color-decoder','optical-modem-tx-worker','optical-modem-tx','optical-modem-worker','optical-modem-rx'])assert.match(sw,new RegExp(name));
 });
