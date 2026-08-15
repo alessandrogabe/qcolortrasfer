@@ -19,14 +19,14 @@ function install(){
   let running=false,stream=null,captureCanvas=document.createElement('canvas'),ctx=captureCanvas.getContext('2d',{alpha:false,willReadFrequently:true});
   let workers=[],busy=[],jobs=[],workerCursor=0,jobId=0,raf=0,tracked=null,lastFull=0,misses=0,earlyDrop=0,attempts=0,hits=0,detectHits=0,trackedHits=0;
   let corrected=0,resampled=0,syncSum=0,calSum=0,marginSum=0,workerEma=0,decodeEma=0,detectorEma=0,lastOverlayAt=0,cameraLabel='—',lastAnchor='—';
-  let lastStage='—',lastFinder=0,lastProbeSync=0,anchorSeen=0;
+  let lastStage='—',lastFinder=0,lastProbeSync=0,anchorSeen=0,lastCal=0,lastMargin=0,lastPilot=0,lastPhase=0,lastControlAccuracy=0,lastTrialCorrected=0,lastDecodeError='';
   let decoder=null,currentStream=null,startedAt=0,completed=false,downloadUrl=null,lastControl=null;
 
   function enabled(){return method.value==='modem';}
   function setStatus(text,kind=''){status.textContent=text;status.dataset.kind=kind;}
   function desiredWorkers(){const hc=Math.max(2,Math.floor(Number(navigator.hardwareConcurrency)||4));return Math.min(MAX_WORKERS,hc>=6?4:hc>=4?3:2);}
   function stopTracks(target){for(const track of target?.getTracks?.()||[])try{track.stop();}catch{}}
-  function resetCounters(){tracked=null;lastFull=0;misses=0;earlyDrop=0;attempts=0;hits=0;detectHits=0;trackedHits=0;corrected=0;resampled=0;syncSum=0;calSum=0;marginSum=0;workerEma=0;decodeEma=0;detectorEma=0;lastStage='—';lastFinder=0;lastProbeSync=0;anchorSeen=0;decoder=null;currentStream=null;startedAt=performance.now();completed=false;lastControl=null;lastAnchor='—';if(progress)progress.value=0;if(download){download.hidden=true;download.removeAttribute('href');}if(downloadUrl){URL.revokeObjectURL(downloadUrl);downloadUrl=null;}clearOverlay();updateStats();}
+  function resetCounters(){tracked=null;lastFull=0;misses=0;earlyDrop=0;attempts=0;hits=0;detectHits=0;trackedHits=0;corrected=0;resampled=0;syncSum=0;calSum=0;marginSum=0;workerEma=0;decodeEma=0;detectorEma=0;lastStage='—';lastFinder=0;lastProbeSync=0;anchorSeen=0;lastCal=0;lastMargin=0;lastPilot=0;lastPhase=0;lastControlAccuracy=0;lastTrialCorrected=0;lastDecodeError='';decoder=null;currentStream=null;startedAt=performance.now();completed=false;lastControl=null;lastAnchor='—';if(progress)progress.value=0;if(download){download.hidden=true;download.removeAttribute('href');}if(downloadUrl){URL.revokeObjectURL(downloadUrl);downloadUrl=null;}clearOverlay();updateStats();}
 
   function clearOverlay(){const r=stage.getBoundingClientRect(),dpr=Math.max(1,Math.min(2,devicePixelRatio||1));overlay.width=Math.max(1,Math.round(r.width*dpr));overlay.height=Math.max(1,Math.round(r.height*dpr));overlay.getContext('2d').clearRect(0,0,overlay.width,overlay.height);}
   function drawOverlay(markers,color='#58f29a'){
@@ -37,7 +37,7 @@ function install(){
   function updateStats(){
     const elapsed=Math.max(.001,(performance.now()-startedAt)/1000),symps=decoder?decoder.framesNew/elapsed:0,kibs=decoder?decoder.framesNew*MODEM_CHUNK_BYTES/elapsed/1024:0,hitPct=attempts?Math.round(hits*100/attempts):0;
     const sync=hits?Math.round(syncSum*100/hits):0,cal=hits?(calSum/hits).toFixed(3):'—',margin=hits?(marginSum/hits).toFixed(4):'—',probeSync=Math.round(lastProbeSync*100);
-    stats.textContent=`MODEM ${hits}/${attempts} (${hitPct}%) · ${symps.toFixed(1)} simboli/s · ${kibs.toFixed(1)} KiB/s · stage ${lastStage} · anchor-visti ${anchorSeen} · finder ${lastFinder?lastFinder.toFixed(1):'—'} · probe-sync ${lastProbeSync?probeSync+'%':'—'} · detector ${detectorEma?detectorEma.toFixed(1):'—'} ms · detect ${detectHits} · tracked ${trackedHits} · anchor ${lastAnchor} · FEC corr ${corrected} · sync ${sync}% · cal ${cal} · margin ${margin} · resample ${resampled} · decode ${decodeEma?decodeEma.toFixed(1):'—'} ms · worker ${workerEma?workerEma.toFixed(1):'—'} ms · pool ${workers.length} · early-drop ${earlyDrop} · camera ${cameraLabel}${lastControl?` · seq~${lastControl.sequenceLow}`:''}`;
+    stats.textContent=`MODEM ${hits}/${attempts} (${hitPct}%) · ${symps.toFixed(1)} simboli/s · ${kibs.toFixed(1)} KiB/s · stage ${lastStage} · anchor-visti ${anchorSeen} · finder ${lastFinder?lastFinder.toFixed(1):'—'} · probe-sync ${lastProbeSync?probeSync+'%':'—'} · detector ${detectorEma?detectorEma.toFixed(1):'—'} ms · detect ${detectHits} · tracked ${trackedHits} · anchor ${lastAnchor} · pilot ${lastPilot}/4 · phase ${lastPhase?Math.round(lastPhase*100)+'%':'—'} · control ${lastControlAccuracy?Math.round(lastControlAccuracy*100)+'%':'—'} · cal-now ${lastCal?lastCal.toFixed(3):'—'} · margin-now ${lastMargin?lastMargin.toFixed(4):'—'} · trial-corr ${lastTrialCorrected} · FEC corr ${corrected} · sync ${sync}% · cal ${cal} · margin ${margin} · resample ${resampled} · decode ${decodeEma?decodeEma.toFixed(1):'—'} ms · worker ${workerEma?workerEma.toFixed(1):'—'} ms · pool ${workers.length} · early-drop ${earlyDrop} · camera ${cameraLabel}${lastDecodeError?` · fail ${lastDecodeError.slice(0,28)}`:''}${lastControl?` · seq~${lastControl.sequenceLow}`:''}`;
     if(progress)progress.value=decoder?decoder.progress*100:0;
   }
 
@@ -67,10 +67,15 @@ function install(){
   function onWorker(index,d){
     busy[index]=false;jobs[index]=null;if(d.id<0)return;attempts++;workerEma=workerEma?workerEma*.88+Number(d.workerMs||0)*.12:Number(d.workerMs||0);lastStage=d.stage||lastStage;
     if(Number(d.detectorMs)>0)detectorEma=detectorEma?detectorEma*.85+Number(d.detectorMs)*.15:Number(d.detectorMs);
-    if(d.anchorFound){anchorSeen++;lastFinder=Number(d.finderScore)||lastFinder;lastProbeSync=Number(d.syncAccuracy)||lastProbeSync;if(d.markers)drawOverlay(d.markers,'#f5c451');}
+    lastCal=Number(d.calibrationSeparation)||lastCal;lastMargin=Number(d.margin)||lastMargin;lastPilot=Number(d.pilotAnchors)||0;lastPhase=Number(d.phaseAccuracy)||lastPhase;lastControlAccuracy=Number(d.controlAccuracy)||lastControlAccuracy;lastTrialCorrected=Number(d.corrected)||0;lastDecodeError=d.decodeError||'';
+    if(d.anchorFound){
+      anchorSeen++;lastFinder=Number(d.finderScore)||lastFinder;lastProbeSync=Number(d.syncAccuracy)||lastProbeSync;lastAnchor=d.anchorSet||lastAnchor||'outer';
+      if(d.markers){tracked={markers:d.markers,rotation:d.rotation,anchorSet:d.anchorSet||'outer'};misses=0;drawOverlay(d.markers,'#f5c451');}
+    }
     if(d.ok){hits++;if(d.detected)detectHits++;else trackedHits++;misses=0;lastAnchor=d.anchorSet||'outer';tracked={markers:d.markers,rotation:d.rotation,anchorSet:lastAnchor};lastFull=d.detected?performance.now():lastFull;corrected+=Number(d.corrected)||0;resampled+=Number(d.resampled)||0;syncSum+=Number(d.syncAccuracy)||0;calSum+=Number(d.calibrationSeparation)||0;marginSum+=Number(d.margin)||0;decodeEma=decodeEma?decodeEma*.88+Number(d.decodeMs||0)*.12:Number(d.decodeMs||0);lastControl=d.control||lastControl;drawOverlay(d.markers);acceptPacket(d.packet);
       if(!completed)setStatus(`OPTICAL MODEM agganciato · ${MODEM_GRID_W}×${MODEM_GRID_H} · 4 colori · SYNC ${lastAnchor} · ${decoder?Math.round(decoder.progress*100):0}%`,'ok');
-    }else{misses++;if(misses>=8)tracked=null;if(misses%20===0)setStatus(`OPTICAL MODEM: stage ${lastStage} · anchor ${anchorSeen} · sync ${lastProbeSync?Math.round(lastProbeSync*100)+'%':'—'} · worker ${workerEma.toFixed(0)} ms`,'warn');}
+    }else if(!d.anchorFound){misses++;if(misses>=8)tracked=null;}
+    if(!d.ok&&attempts%20===0)setStatus(`OPTICAL MODEM: stage ${lastStage} · anchor ${anchorSeen} · sync ${lastProbeSync?Math.round(lastProbeSync*100)+'%':'—'} · pilot ${lastPilot}/4 · phase ${lastPhase?Math.round(lastPhase*100)+'%':'—'} · cal ${lastCal?lastCal.toFixed(3):'—'} · worker ${workerEma.toFixed(0)} ms`,'warn');
     updateStats();
   }
 
