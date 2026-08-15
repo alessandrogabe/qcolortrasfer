@@ -112,12 +112,26 @@ export function detectOuterModemMarkers(image){
   return best;
 }
 
+function validateTrackedGeometry(image,markers,rotation){
+  const h=homographyFromPoints(rotateSource(rotation),markers);if(!h)return null;const sync=syncScore(image,h);return sync&&sync.accuracy>=.64?sync:null;
+}
+
 export function refineOuterModemMarkers(image,tracked){
-  if(!tracked?.markers?.length||tracked.markers.length!==4)return null;const markers=[];
+  if(!tracked?.markers?.length||tracked.markers.length!==4)return null;const rotation=Number(tracked.rotation)||0,markers=[];
   for(const marker of tracked.markers){
-    let best=null;for(let dy=-4;dy<=4;dy+=2)for(let dx=-4;dx<=4;dx+=2)for(const dr of [-2,0,2]){const r=Math.max(4,Number(marker.r||8)+dr),score=fullSquareScore(image,marker.x+dx,marker.y+dy,r);if(!best||score>best.score)best={x:marker.x+dx,y:marker.y+dy,r,score,rank:score};}
-    if(!best||best.score<38)return null;markers.push(best);
+    const baseR=Math.max(4,Number(marker.r||8)),baseScore=fullSquareScore(image,marker.x,marker.y,baseR);let best={x:marker.x,y:marker.y,r:baseR,score:baseScore,rank:baseScore};
+    for(let dy=-4;dy<=4;dy+=2)for(let dx=-4;dx<=4;dx+=2)for(const dr of [-2,0,2]){
+      const r=Math.max(4,baseR+dr),score=fullSquareScore(image,marker.x+dx,marker.y+dy,r),rank=score-1.35*Math.hypot(dx,dy)-.55*Math.abs(dr);
+      if(rank>best.rank)best={x:marker.x+dx,y:marker.y+dy,r,score,rank};
+    }
+    if(!best||best.score<34)return null;markers.push(best);
   }
-  const h=homographyFromPoints(rotateSource(Number(tracked.rotation)||0),markers);if(!h)return null;const sync=syncScore(image,h);if(!sync||sync.accuracy<.64)return null;
-  return{markers,rotation:Number(tracked.rotation)||0,anchorSet:'outer',syncAccuracy:sync.accuracy,syncSeparation:sync.separation,finderScore:markers.reduce((s,m)=>s+m.score,0)/4};
+  let sync=validateTrackedGeometry(image,markers,rotation);
+  if(sync)return{markers,rotation,anchorSet:'outer',syncAccuracy:sync.accuracy,syncSeparation:sync.separation,finderScore:markers.reduce((s,m)=>s+m.score,0)/4};
+
+  // A local finder maximum is not allowed to destroy a previously coherent
+  // projective lock. If refinement hurts the long known-SYNC sequence, retain
+  // the prior geometry for this frame and let a future full scan reacquire.
+  const original=tracked.markers.map(m=>({...m}));sync=validateTrackedGeometry(image,original,rotation);if(!sync)return null;
+  return{markers:original,rotation,anchorSet:'outer',syncAccuracy:sync.accuracy,syncSeparation:sync.separation,finderScore:original.reduce((s,m)=>s+fullSquareScore(image,m.x,m.y,Math.max(4,Number(m.r||8))),0)/4};
 }
